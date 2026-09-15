@@ -67,3 +67,8 @@ await turn.committed;
 
 console.log("\ntimings:", turn.timings());
 console.log("messages persisted:", session.messages.length);
+
+// In an HTTP route you would not drain the stream yourself — hand the turn
+// back whole, and the client-held message keeps the id it was persisted under:
+//
+//   return result.toUIMessageStreamResponse();

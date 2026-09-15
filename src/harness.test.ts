@@ -1938,3 +1938,177 @@ test("a bare toolset still works, with no context at all", async () => {
   await drain(await session.prompt("go"));
   assert.equal(seen.bare, "ran");
 });
+
+// --- toUIMessageStream ------------------------------------------------------
+// The bridge to a browser. The defaults are the union of what hand-written
+// route handlers got right separately: id alignment with the persisted row,
+// createdAt on every part, and the turn's timings on the finish part.
+
+/** Read a UI-message stream into an array of chunks. */
+async function readChunks(
+  stream: ReadableStream<{ type: string; [k: string]: unknown }>,
+) {
+  const chunks: Array<{ type: string; [k: string]: unknown }> = [];
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return chunks;
+}
+
+function uiStreamSetup() {
+  const storage = new InMemorySessionStorage();
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({ stream: textStream("hello") }),
+  });
+  const helper = role({ name: "helper", systemPrompt: "You help." });
+  return { storage, model, helper };
+}
+
+test("the streamed message id is the id the turn is persisted under", async () => {
+  const { storage, model, helper } = uiStreamSetup();
+  const session = await (
+    await init({ registry: {}, model, role: helper(), storage })
+  ).session({ sessionId: "ui1" });
+
+  const result = await session.prompt("hi");
+  const chunks = await readChunks(
+    result.toUIMessageStream() as ReadableStream<{
+      type: string;
+      [k: string]: unknown;
+    }>,
+  );
+  await result.committed;
+
+  const start = chunks.find((c) => c.type === "start");
+  assert.equal(
+    start?.messageId,
+    result.responseMessageId,
+    "the start chunk must carry the response id",
+  );
+
+  const saved = await storage.loadMessages("ui1");
+  const assistant = saved.at(-1)!;
+  assert.equal(assistant.role, "assistant");
+  // The whole point: the client-held message and the stored row agree.
+  assert.equal(assistant.id, result.responseMessageId);
+});
+
+test("createdAt is stamped on every part and timings on the finish part", async () => {
+  const { storage, model, helper } = uiStreamSetup();
+  const session = await (
+    await init({ registry: {}, model, role: helper(), storage })
+  ).session({ sessionId: "ui2" });
+
+  const result = await session.prompt("hi");
+  const chunks = await readChunks(
+    result.toUIMessageStream() as ReadableStream<{
+      type: string;
+      [k: string]: unknown;
+    }>,
+  );
+  await result.committed;
+
+  // Interim metadata arrives as its own `message-metadata` chunk; the finish
+  // part's rides on the `finish` chunk itself.
+  const metadata = chunks
+    .filter((c) => c.type === "message-metadata" || c.type === "finish")
+    .map((c) => c.messageMetadata as { createdAt?: number; timings?: unknown });
+  assert.ok(metadata.length > 1, "expected metadata on the stream");
+  assert.ok(
+    metadata.every((m) => typeof m.createdAt === "number"),
+    "every part carries createdAt",
+  );
+  const timed = metadata.filter((m) => m.timings !== undefined);
+  assert.equal(timed.length, 1, "timings ride on the finish part alone");
+  assert.equal(
+    typeof (timed[0]!.timings as { totalMs: number }).totalMs,
+    "number",
+  );
+  const finish = chunks.find((c) => c.type === "finish");
+  assert.ok(
+    (finish?.messageMetadata as { timings?: unknown })?.timings !== undefined,
+    "the finish chunk is the one carrying timings",
+  );
+});
+
+test("toUIMessageStream defaults are overridable", async () => {
+  const { storage, model, helper } = uiStreamSetup();
+  const session = await (
+    await init({ registry: {}, model, role: helper(), storage })
+  ).session({ sessionId: "ui3" });
+
+  const result = await session.prompt("hi");
+  const chunks = await readChunks(
+    result.toUIMessageStream({
+      messageMetadata: () => ({ mine: true }),
+    }) as ReadableStream<{ type: string; [k: string]: unknown }>,
+  );
+  await result.committed;
+
+  const metadata = chunks
+    .filter((c) => c.type === "message-metadata" || c.type === "finish")
+    .map((c) => c.messageMetadata as Record<string, unknown>);
+  assert.ok(metadata.length > 0);
+  assert.ok(
+    metadata.every((m) => m.mine === true && m.createdAt === undefined),
+    "a caller's messageMetadata replaces the harness default",
+  );
+});
+
+test("the response copy does not starve the harness's own persistence", async () => {
+  const { storage, model, helper } = uiStreamSetup();
+  const session = await (
+    await init({ registry: {}, model, role: helper(), storage })
+  ).session({ sessionId: "ui4" });
+
+  const result = await session.prompt("hi");
+  // Drain the caller's copy fully, then assert the turn still persisted — the
+  // stream tees per access, which is the fact the old hand-written glue needed
+  // a comment to explain.
+  await readChunks(
+    result.toUIMessageStream() as ReadableStream<{
+      type: string;
+      [k: string]: unknown;
+    }>,
+  );
+  await result.committed;
+
+  const saved = await storage.loadMessages("ui4");
+  assert.equal(saved.at(-1)?.role, "assistant");
+  const text = saved
+    .at(-1)!
+    .parts.filter((p) => p.type === "text")
+    .map((p) => (p as { text: string }).text)
+    .join("");
+  assert.equal(text, "hello");
+});
+
+test("toUIMessageStreamResponse returns a streaming Response with the caller's headers", async () => {
+  const { storage, model, helper } = uiStreamSetup();
+  const session = await (
+    await init({ registry: {}, model, role: helper(), storage })
+  ).session({ sessionId: "ui5" });
+
+  const result = await session.prompt("hi");
+  const response = result.toUIMessageStreamResponse({
+    headers: { "access-control-allow-origin": "https://example.com" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("access-control-allow-origin"),
+    "https://example.com",
+  );
+  assert.match(response.headers.get("content-type") ?? "", /event-stream/);
+
+  const body = await response.text();
+  await result.committed;
+  assert.ok(body.includes(result.responseMessageId), "the id reaches the wire");
+  assert.ok(body.includes("hello"), "the text reaches the wire");
+});

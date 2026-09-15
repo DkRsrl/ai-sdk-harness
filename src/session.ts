@@ -34,6 +34,12 @@ import {
 } from "./code-mode";
 import { formatMessageMetadata, withMessageMetadata } from "./metadata";
 import { createTimingsRecorder, withTimings } from "./timings";
+import {
+  turnToUIMessageStream,
+  turnToUIMessageStreamResponse,
+  type UIMessageStreamOptions,
+  type UIMessageStreamResponseOptions,
+} from "./ui-stream";
 import { runWithSession } from "./session-context";
 import {
   assembleInstructions,
@@ -663,11 +669,24 @@ export function createSession<
     // the fully-assembled assistant message(s) to persist. The returned
     // result still streams independently to the caller (the SDK tees from the
     // underlying stream, so consuming `result.stream` here doesn't starve it).
+    // Mint the assistant message's id up front instead of letting the SDK
+    // generate it inside the persistence stream: the caller's copy of the
+    // stream has to stamp the SAME id, or a client-held message and its stored
+    // row disagree and per-message feedback has nothing to key on. Later
+    // messages in the same turn, if any, keep generating their own.
+    const responseMessageId = generateId();
+    let responseIdTaken = false;
+    const nextMessageId = () => {
+      if (responseIdTaken) return generateId();
+      responseIdTaken = true;
+      return responseMessageId;
+    };
+
     const committed = (pendingSave = (async () => {
       const uiStream = toUIMessageStream<TTools, SessionMessage>({
         stream: result.stream,
         originalMessages: messages,
-        generateMessageId: () => generateId(),
+        generateMessageId: nextMessageId,
         onFinish: async ({ messages: updated }) => {
           // The run's latency profile rides on its assistant message, next to
           // `createdAt`, so it persists with the transcript.
@@ -706,9 +725,23 @@ export function createSession<
     // construction); the role's schema makes the runtime result carry the
     // parsed `TOutput`, so bridge the static type here. `timings()` exposes
     // the run's recorder so a route can stream the numbers to its client.
+    const uiSource = {
+      stream: result.stream,
+      responseMessageId,
+      timings: () => timings.finish(),
+      now: () => Date.now(),
+    };
     return Object.assign(result, {
       timings: () => timings.finish(),
       committed,
+      responseMessageId,
+      // `result.stream` tees per access, so this copy is independent of the
+      // persistence consumer draining above.
+      toUIMessageStream: (options?: UIMessageStreamOptions<TTools>) =>
+        turnToUIMessageStream(uiSource, options),
+      toUIMessageStreamResponse: (
+        options?: UIMessageStreamResponseOptions<TTools>,
+      ) => turnToUIMessageStreamResponse(uiSource, options),
     }) as unknown as StreamResult<TTools, TOutput>;
   }
 

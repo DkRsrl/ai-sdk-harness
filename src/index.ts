@@ -75,6 +75,10 @@ export type {
 export {
   resolvePrompt,
 } from "./prompt";
+export type {
+  UIMessageStreamOptions,
+  UIMessageStreamResponseOptions,
+} from "./ui-stream";
 export type { GenericToolApprovalFunction, ToolApprovalResponse } from "ai";
 export type {
   AnySession,

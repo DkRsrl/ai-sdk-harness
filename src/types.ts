@@ -6,12 +6,14 @@ import type {
 import type {
   DeepPartial,
   GenericToolApprovalFunction,
+  InferUIMessageChunk,
   LanguageModel,
   Output,
   PrepareStepFunction,
   StreamTextResult,
   ToolLoopAgentSettings,
   ToolSet,
+  UIMessage,
 } from "ai";
 import type {
   RealtimeAudioConfig,
@@ -21,6 +23,10 @@ import type {
 } from "./voice";
 import type { RegistrySource } from "./registry";
 import type { BoundRole } from "./role";
+import type {
+  UIMessageStreamOptions,
+  UIMessageStreamResponseOptions,
+} from "./ui-stream";
 import type { BoundSkill, ParsedSkill, SkillSource } from "./skills";
 import type { SessionMessage, SessionStorage } from "./storage";
 import type { TurnTimings } from "./timings";
@@ -62,6 +68,22 @@ export type StreamResult<
   /** Resolves after the streamed assistant turn has been assembled and saved.
    *  Rejects when stream consumption or persistence fails. */
   readonly committed: Promise<void>;
+  /** The id this turn's assistant message is persisted under. Stamped on the
+   *  streamed message too (see `toUIMessageStream`), so a client-held message
+   *  and its stored row share one id — what per-message feedback keys on. */
+  readonly responseMessageId: string;
+  /** This turn as a UI-message stream, with the harness's defaults applied:
+   *  the response copy of the teed stream, `responseMessageId` for id
+   *  alignment, and `createdAt` on every part with the turn's `timings` on the
+   *  finish part. Every default is overridable. */
+  toUIMessageStream<UI_MESSAGE extends UIMessage = UIMessage>(
+    options?: UIMessageStreamOptions<TTools, UI_MESSAGE>,
+  ): ReadableStream<InferUIMessageChunk<UI_MESSAGE>>;
+  /** The same stream as an HTTP response — `status`, `statusText` and
+   *  `headers` join the stream options. */
+  toUIMessageStreamResponse<UI_MESSAGE extends UIMessage = UIMessage>(
+    options?: UIMessageStreamResponseOptions<TTools, UI_MESSAGE>,
+  ): Response;
 };
 
 /** A `HarnessConfig` after `init` has normalized it: the registry reduced to

@@ -97,10 +97,30 @@ for await (const part of turn.textStream) process.stdout.write(part);
 await turn.committed;
 ```
 
-`session.prompt()` returns the AI SDK's `StreamTextResult` plus two additions:
-`committed`, which resolves once the assistant turn has been assembled and
-saved, and `timings()`, the turn's latency profile — the same one that lands on
-the persisted message's `metadata.timings`.
+`session.prompt()` returns the AI SDK's `StreamTextResult` plus a few
+additions: `committed`, which resolves once the assistant turn has been
+assembled and saved; `timings()`, the turn's latency profile — the same one
+that lands on the persisted message's `metadata.timings`; and
+`responseMessageId`, the id the turn is persisted under.
+
+### Streaming a turn to a browser
+
+```ts
+export async function POST(request: Request) {
+  const session = await harness.session({ sessionId });
+  const result = await session.prompt(text);
+  return result.toUIMessageStreamResponse();
+}
+```
+
+The defaults are the ones a route handler would otherwise wire by hand, and
+they need the harness's own knowledge to get right: the response copy of the
+teed stream (independent of the harness's persistence consumer), the
+`responseMessageId` stamped on the streamed message so a client-held message
+and its stored row share one id, `createdAt` on every part, and the turn's
+`timings` on the finish part. Everything is overridable — `sendReasoning: false`
+for a public widget, `headers` for CORS — and `toUIMessageStream()` gives the
+stream alone if you are composing a response yourself.
 
 Omitting `storage` gives an `InMemorySessionStorage`; supply a `SessionStorage`
 to persist. Passing a `sessionId` that storage already knows resumes that
