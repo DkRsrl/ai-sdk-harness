@@ -25,17 +25,125 @@ bun add ai-sdk-harness
 `react` is an optional peer dependency — only `ai-sdk-harness/voice/react`
 needs it.
 
-## Orchestration
+## Usage
 
-The package exposes two levels of orchestration:
+`init()` is the harness. Everything else in this package is built on it.
+Runnable versions of everything below live in [`examples/`](./examples) —
+`bun run examples/code-mode-runtime.ts` needs no API key.
 
-- `init()` configures one text or realtime drive directly. Use it for jobs,
-  structured roles, subsessions, and tests that need low-level session control.
-- `Assistant` configures one reusable text-and-voice assistant. It resolves an
-  application's context and storage once per durable session, then exposes
-  `prompt()` and `voice()` on that session.
+A **registry** is every tool the harness can ever expose. A **role** names the
+subset that is active by default, plus the system prompt. Tools are referenced
+*by name* — the harness owns the registry, the role only declares which names
+reach the model on a normal step.
 
-## Assistant
+```ts
+import { createRegistry, harnessTool, init, type Session } from "ai-sdk-harness";
+import { z } from "zod";
+
+const { registry, role } = createRegistry({
+  lookupOrder: harnessTool({
+    description: "Look up an order by id",
+    inputSchema: z.object({ id: z.string() }),
+    contextSchema: z.object({ userId: z.string() }),
+    // The running session is injected — no threading it through the schema.
+    // Annotate both parameters: neither schema drives inference here, and an
+    // un-inferred one collapses the whole object to `never`.
+    execute: async (
+      input: { id: string },
+      { context, session }: { context: { userId: string }; session: Session },
+    ) => fetchOrder({ id: input.id, userId: context.userId, sessionId: session.id }),
+  }),
+});
+
+const support = role({
+  name: "support",
+  systemPrompt: "You help customers with their orders.",
+  tools: ["lookupOrder"],
+});
+```
+
+`createRegistry` binds the factories to the registry, so a typo in `tools`
+is a compile error rather than a runtime one.
+
+```ts
+const harness = await init({
+  registry,
+  model: "anthropic/claude-sonnet-5",
+  role: support(),
+  toolsContext: { lookupOrder: { userId } },
+  storage,
+});
+
+const session = await harness.session({ sessionId });
+const turn = await session.prompt("Where is order 42?");
+
+for await (const part of turn.textStream) process.stdout.write(part);
+await turn.committed;
+```
+
+`session.prompt()` returns the AI SDK's `StreamTextResult` plus two additions:
+`committed`, which resolves once the assistant turn has been assembled and
+saved, and `timings()`, the turn's latency profile — the same one that lands on
+the persisted message's `metadata.timings`.
+
+Omitting `storage` gives an `InMemorySessionStorage`; supply a `SessionStorage`
+to persist. Passing a `sessionId` that storage already knows resumes that
+transcript.
+
+### The model spec picks the drive
+
+The same `init()` produces a voice session when the model is a
+`RealtimeModelV1` instead of a `LanguageModel` — the type follows the spec, so
+`.prompt()` and `.voice()` are never both present:
+
+```ts
+import { grok } from "ai-sdk-harness/voice/grok";
+
+const harness = await init({
+  registry,
+  model: grok("grok-voice-latest"),
+  role: support(),
+});
+const session = await harness.session({ sessionId });
+
+const call = await session.voice({ onStatus, onAudio });
+await call.start();
+call.pushAudio(pcm);
+await call.stop();
+```
+
+`voice()` seeds the prior conversation, exposes the same role-gated tools and
+persists each finalized turn; it returns the live `RealtimeSession` without
+connecting, so you `start()` it yourself — or hand it a duplex wire with
+`call.serve(send)`, the voice analogue of `result.toUIMessageStream()`.
+
+Both drives share the registry, the role, the skills and the transcript, so a
+session can change drive between turns and carry the history forward. A voice
+session can also escalate work to a text worker through `session.subsession()`,
+which names its own model.
+
+### Skills
+
+A role is fixed for the session; skills are progressive. A skill carries
+instructions and can toggle on tools the role didn't expose. The host injects
+one with `session.skill(name)` between turns; the model can load one itself
+mid-turn through `skillLoaderTool()`, with `loadableSkills` naming the sources
+it may draw from.
+
+### Code mode
+
+`role({ toolCallers })` can route a tool into a sandboxed program instead of a
+direct call — the model writes JavaScript against `tools.name(input)` and a
+confined interpreter runs it, with the host's tools as its only door to the
+world. See `src/codemode/README.md`.
+
+## Assistant — the higher-order usage
+
+`Assistant` is a convenience over `init()`, not a separate system. Use it when
+one application has a reusable text-and-voice assistant whose context and
+storage should resolve once per durable session rather than per turn. Anything
+it does can be done with `init()` directly.
+
 
 ```ts
 const assistant = createAssistant<AppScope>()({
