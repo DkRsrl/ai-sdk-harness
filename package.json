@@ -1,0 +1,79 @@
+{
+  "name": "ai-sdk-harness",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Application-agnostic agent harness over the AI SDK, with reusable text-and-voice assistants, role-gated tools, skills, and pluggable session storage.",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./voice": {
+      "types": "./dist/voice/index.d.ts",
+      "default": "./dist/voice/index.js"
+    },
+    "./voice/grok": {
+      "types": "./dist/voice/providers/grok/index.d.ts",
+      "default": "./dist/voice/providers/grok/index.js"
+    },
+    "./voice/gemini": {
+      "types": "./dist/voice/providers/gemini/index.d.ts",
+      "default": "./dist/voice/providers/gemini/index.js"
+    },
+    "./voice/gateway": {
+      "types": "./dist/voice/providers/gateway/index.d.ts",
+      "default": "./dist/voice/providers/gateway/index.js"
+    },
+    "./voice/protocol": {
+      "types": "./dist/voice/protocol.d.ts",
+      "default": "./dist/voice/protocol.js"
+    },
+    "./voice/ui": {
+      "types": "./dist/voice/ui/index.d.ts",
+      "default": "./dist/voice/ui/index.js"
+    },
+    "./voice/react": {
+      "types": "./dist/voice/react/index.d.ts",
+      "default": "./dist/voice/react/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "lint": "tsc --noEmit",
+    "test": "bun test",
+    "prepublishOnly": "bun run lint && bun run test && bun run build"
+  },
+  "dependencies": {
+    "@ai-sdk/provider-utils": "^5.0.0",
+    "@google/genai": "^1.51.0",
+    "acorn": "8.15.0",
+    "ai": "^7.0.0",
+    "effect": "4.0.0-beta.101",
+    "typescript": "^6",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "react": "^19"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.5",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19",
+    "react": "^19",
+    "tsdown": "^0.15.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

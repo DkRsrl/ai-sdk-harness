@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // Voice's UI and React entrypoints are browser-side.
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    // The vendored codemode sources (src/codemode, MIT, from opencode) are
+    // written against this; voice was written with it on, which still compiles.
+    "noUncheckedIndexedAccess": false,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["node", "bun"]
+  },
+  "include": ["src", "test", "tsdown.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}
