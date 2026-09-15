@@ -24,7 +24,7 @@ export type VoiceStatus =
   // the answer. Distinct from `thinking` because they cost a listener different
   // things — one is a pause in a conversation, the other is a lookup whose
   // result will change the answer, and a client that renders them alike leaves
-  // a plain greeting looking exactly like a query to the ERP.
+  // a plain greeting looking exactly like a query to a backend tool.
   | "composing"
   // A tool is running. The wait has a cause outside the model.
   | "thinking"

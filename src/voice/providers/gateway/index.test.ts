@@ -110,13 +110,13 @@ test("gatewaySessionUpdate maps voice, tools, formats and providerOptions", () =
 test("gatewaySessionUpdate carries keyterms in the provider-native shape", () => {
   const update = gatewaySessionUpdate(makeCall(), {
     sampleRate: 24000,
-    language: "it",
+    language: "en",
     keyterms: ["Acme", "Acme", "  "],
   });
   const config = update.config as Record<string, unknown>;
   // The language hint has a normalized home; key terms do not, so they ride
-  // bare through providerOptions while both reach the provider.
-  assert.deepEqual(config.inputAudioTranscription, { language: "it" });
+  // bare through providerOptions, while both reach the provider.
+  assert.deepEqual(config.inputAudioTranscription, { language: "en" });
   assert.deepEqual(config.providerOptions, {
     audio: { input: { transcription: { keyterms: ["Acme"] } } },
   });
@@ -128,13 +128,13 @@ test("gatewaySessionUpdate merges keyterms into caller-supplied providerOptions"
     keyterms: ["Acme"],
     providerOptions: {
       reasoning_effort: "none",
-      audio: { input: { transcription: { language_hint: "it" } } },
+      audio: { input: { transcription: { language_hint: "en" } } },
     },
   });
   const config = update.config as Record<string, unknown>;
   assert.deepEqual(config.providerOptions, {
     reasoning_effort: "none",
-    audio: { input: { transcription: { language_hint: "it", keyterms: ["Acme"] } } },
+    audio: { input: { transcription: { language_hint: "en", keyterms: ["Acme"] } } },
   });
 });
 

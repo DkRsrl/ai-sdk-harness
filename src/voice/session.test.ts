@@ -660,7 +660,7 @@ test("a response that called a tool is not the end of the turn", async () => {
   });
   await s.start();
 
-  // The answer the seller waits for spans two responses: the first speaks a
+  // The answer the caller waits for spans two responses: the first speaks a
   // filler and calls the tool, the second speaks the result.
   m.emit({ type: "response.start" });
   m.emit({ type: "transcript.delta", role: "assistant", text: "One moment" });
@@ -969,7 +969,7 @@ test("an assistant turn carries ttft (from injected text) and total duration", a
 
   s.sendText("which customers do I have?");
   t = 1300;
-  m.emit({ type: "transcript.delta", role: "assistant", text: "Hai" });
+  m.emit({ type: "transcript.delta", role: "assistant", text: "You have" });
   t = 1450;
   m.emit({ type: "transcript.delta", role: "assistant", text: " two customers" });
   t = 2100;
@@ -1026,7 +1026,7 @@ test("a settled mic utterance anchors the next reply's ttft", async () => {
 
   m.emit({ type: "transcript.final", role: "user", text: "what time is it?" });
   t = 1500;
-  m.emit({ type: "transcript.delta", role: "assistant", text: "Sono" });
+  m.emit({ type: "transcript.delta", role: "assistant", text: "It's" });
   t = 1900;
   m.emit({ type: "transcript.done", role: "assistant" });
 
@@ -1085,16 +1085,16 @@ test("a new user turn restarts the measurement", async () => {
   });
   await s.start();
 
-  s.sendText("prima domanda");
+  s.sendText("first question");
   t = 1500;
-  m.emit({ type: "transcript.delta", role: "assistant", text: "Ecco" });
+  m.emit({ type: "transcript.delta", role: "assistant", text: "Here" });
   t = 2000;
   m.emit({ type: "transcript.done", role: "assistant" });
 
   t = 5000;
-  m.emit({ type: "transcript.final", role: "user", text: "seconda domanda" });
+  m.emit({ type: "transcript.final", role: "user", text: "second question" });
   t = 5200;
-  m.emit({ type: "transcript.delta", role: "assistant", text: "Anche" });
+  m.emit({ type: "transcript.delta", role: "assistant", text: "Also" });
   t = 5600;
   m.emit({ type: "transcript.done", role: "assistant" });
 
@@ -1155,7 +1155,7 @@ test("a tool message carries its round-trip duration", async () => {
   assert.deepEqual(toolMsg.timings, { totalMs: 750 });
 });
 
-// ── A corrected user transcript ─────────────────────────────────
+// ── A corrected user transcript ─────────────────────────────────────────────
 // The ASR sends a second `completed` for the SAME conversation item when it
 // revises what it heard, and the gateway relays both (verified live: two
 // events, one item id, "what were the" then the full sentence). The
@@ -1236,10 +1236,10 @@ test("no revision once the assistant is speaking", async () => {
     onMessage: (msg) => messages.push(msg),
   });
   await s.start();
-  m.emit({ type: "transcript.final", role: "user", text: "prima domanda", utterance: "i1" });
+  m.emit({ type: "transcript.final", role: "user", text: "first question", utterance: "i1" });
   m.emit({ type: "speech.start" }); // audio reached the user
   m.emit({ type: "speech.interrupted" }); // barge-in
-  m.emit({ type: "transcript.final", role: "user", text: "seconda domanda", utterance: "i1" });
+  m.emit({ type: "transcript.final", role: "user", text: "second question", utterance: "i1" });
 
   const users = messages.filter((msg) => msg.type === "text" && msg.role === "user");
   assert.equal(users.length, 2);
@@ -1405,7 +1405,7 @@ test("a revision re-anchors the reply's latency to the corrected end-of-turn", a
   t = 2000;
   m.emit({ type: "transcript.final", role: "user", text: "what were the March sales", utterance: "i1" });
   t = 2300;
-  m.emit({ type: "transcript.delta", role: "assistant", text: "Ecco" });
+  m.emit({ type: "transcript.delta", role: "assistant", text: "Here" });
   t = 2500;
   m.emit({ type: "transcript.done", role: "assistant" });
 
@@ -1456,8 +1456,8 @@ test("a keyless final is unaffected by the revision path", async () => {
     onMessage: (msg) => messages.push(msg),
   });
   await s.start();
-  m.emit({ type: "transcript.final", role: "user", text: "prima" });
-  m.emit({ type: "transcript.final", role: "user", text: "seconda" });
+  m.emit({ type: "transcript.final", role: "user", text: "first" });
+  m.emit({ type: "transcript.final", role: "user", text: "second" });
 
   const users = messages.filter((msg) => msg.type === "text" && msg.role === "user");
   assert.equal(users.length, 2);
@@ -1494,15 +1494,15 @@ test("an assistant turn is never revised by a repeated final", async () => {
     onMessage: (msg) => messages.push(msg),
   });
   await s.start();
-  m.emit({ type: "transcript.final", role: "assistant", text: "prima", utterance: "a1" });
-  m.emit({ type: "transcript.final", role: "assistant", text: "seconda", utterance: "a1" });
+  m.emit({ type: "transcript.final", role: "assistant", text: "first", utterance: "a1" });
+  m.emit({ type: "transcript.final", role: "assistant", text: "second", utterance: "a1" });
 
   const replies = messages.filter((msg) => msg.type === "text" && msg.role === "assistant");
   assert.equal(replies.length, 2);
   assert.notEqual(replies[0]?.id, replies[1]?.id);
 });
 
-// ── An utterance resuming across a pause ────────────────────────
+// ── An utterance resuming across a pause ────────────────────────────────────
 // Verified live: a pause long enough for VAD to commit the turn settles it by
 // final and a response starts; resuming speech fires barge-in (cancelling the
 // answer before any audio) and the ASR keeps growing the SAME item — live
@@ -1635,8 +1635,8 @@ test("a revised spoken turn does not re-stamp the clock", async () => {
 });
 
 // A pause while the model writes its own answer is not a lookup. Rendering
-// them alike made a plain greeting sound and look exactly like a query to the
-// ERP: the seller heard the tool cue and had nothing to look at.
+// them alike made a plain greeting sound and look exactly like a backend
+// query: the caller heard the tool cue and had nothing to look at.
 test("composing while the model writes, thinking only while a tool runs", async () => {
   const m = mockModel();
   const s = createRealtimeSession({ model: m.model, ...makeCall() });
@@ -1767,8 +1767,7 @@ test("an utterance nobody closes holds the tool for as long as the call lasts", 
   // What the wait costs when it is not capped, stated plainly: a provider that
   // opens an utterance and never closes it strands every tool behind it. This
   // is why each provider closes the utterance it opened even when the ASR
-  // produced nothing — the guarantee lives there, not in a
-  // deadline here.
+  // produced nothing — the guarantee lives there, not in a deadline here.
   const m = mockModel();
   const ran: string[] = [];
   const read = tool({
@@ -1882,11 +1881,11 @@ test("a late transcript for the previous utterance does not release the current 
   m.emit({ type: "tool.call", callId: "c1", name: "read", input: {} });
   await tick();
 
-  m.emit({ type: "transcript.final", role: "user", text: "prima domanda", utterance: "a" });
+  m.emit({ type: "transcript.final", role: "user", text: "first question", utterance: "a" });
   await tick();
   assert.deepEqual(seen, [], "A's late transcript must not release a tool waiting for B");
 
-  m.emit({ type: "transcript.final", role: "user", text: "seconda domanda", utterance: "b" });
+  m.emit({ type: "transcript.final", role: "user", text: "second question", utterance: "b" });
   await tick();
   assert.deepEqual(seen, ["2"], "the tool must see both turns");
 });
@@ -1938,7 +1937,7 @@ test("a restarted session does not inherit an utterance from the last one", asyn
 });
 
 test("one call's open utterance does not hold another call's tools", async () => {
-  // Two sellers on the phone at once. The utterance state is the session's
+  // Two callers on the phone at once. The utterance state is the session's
   // own, so a turn still being transcribed in one call must not stop a tool
   // in the other.
   const a = mockModel();

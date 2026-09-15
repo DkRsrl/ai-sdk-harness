@@ -9,11 +9,11 @@ test("converts text turns, dropping empty text", async () => {
   const messages: UIMessage[] = [
     { id: "1", role: "user", parts: [{ type: "text", text: "ciao" }] },
     { id: "2", role: "assistant", parts: [{ type: "text", text: "  " }] },
-    { id: "3", role: "assistant", parts: [{ type: "text", text: "salve" }] },
+    { id: "3", role: "assistant", parts: [{ type: "text", text: "hello" }] },
   ];
   assert.deepEqual(await convertToRealtimeSeed(messages), [
     { type: "text", role: "user", text: "ciao" },
-    { type: "text", role: "assistant", text: "salve" },
+    { type: "text", role: "assistant", text: "hello" },
   ]);
 });
 

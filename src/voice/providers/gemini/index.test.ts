@@ -89,8 +89,8 @@ test("maps audio, transcripts, tool calls and barge-in to spec events", async ()
   assert.ok(events.some((e) => e.type === "transport" && e.status === "connected"));
 
   // user speaks (incremental), then the model responds
-  fake.fire({ serverContent: { inputTranscription: { text: "che ore " } } });
-  fake.fire({ serverContent: { inputTranscription: { text: "sono" } } });
+  fake.fire({ serverContent: { inputTranscription: { text: "what time " } } });
+  fake.fire({ serverContent: { inputTranscription: { text: "is it" } } });
   const pcm = Buffer.from([1, 2, 3, 4]).toString("base64");
   fake.fire({ serverContent: { modelTurn: { parts: [{ inlineData: { data: pcm } }] } } });
   fake.fire({ serverContent: { outputTranscription: { text: "It's 3 o'clock" } } });

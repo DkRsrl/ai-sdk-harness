@@ -90,12 +90,12 @@ test("grokSessionUpdate sends key terms and the language hint side by side", () 
   const update = grokSessionUpdate(makeCall(), {
     voice: "ada",
     sampleRate: 24000,
-    language: "it",
+    language: "en",
     keyterms: ["Acme", " Acme "],
   });
   const audio = (update.session as Record<string, unknown>).audio as Record<string, unknown>;
   const input = audio.input as Record<string, unknown>;
-  assert.deepEqual(input.transcription, { language_hint: "it", keyterms: ["Acme"] });
+  assert.deepEqual(input.transcription, { language_hint: "en", keyterms: ["Acme"] });
 });
 
 test("grokSessionUpdate omits keyterms when the list is empty", () => {
@@ -536,7 +536,7 @@ test("missing API key throws on connect", async () => {
 });
 
 test("end-to-end through the core: a repeated item_id never folds the next utterance into a stale turn", async () => {
-  // Production sequence (an internal note, chat REDACTED): the terminal
+  // Observed production sequence: the terminal
   // `completed` for one utterance repeats an already-finalized item_id, so the
   // turn it should close never closes; the next utterance then rides the stale
   // turn — its text lands under the earlier id and createdAt, and the earlier

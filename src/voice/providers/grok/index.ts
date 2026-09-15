@@ -304,8 +304,8 @@ export function grok(modelId: GrokVoiceModel, options: GrokModelOptions = {}): R
           case "conversation.item.input_audio_transcription.failed":
             // The ASR gave up on this utterance: no `completed` is coming. Say
             // it is over anyway — the core holds the utterance open from
-            // speech-started and anything waiting on it would wait forever
-            //. `done` keeps whatever partial text arrived.
+            // speech-started and anything waiting on it would wait forever.
+            // `done` keeps whatever partial text arrived.
             emit({
               type: "transcript.done",
               role: "user",

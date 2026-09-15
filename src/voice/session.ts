@@ -520,12 +520,13 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
   /** Align the open turn with the utterance a streaming event belongs to. A
    *  new key while a differently-keyed turn is open means the open turn's
    *  final got lost — settle it from its buffered snapshot before the new
-   *  utterance can write under its id. With no turn open, a key
-   *  whose turn already settled reopens per `reopensSettled` — for the
-   *  settled-by-final case that is the utterance continuing across a pause
-   *, and without the
-   *  reopen those snapshots would mint a sibling turn that the eventual
-   *  corrected final then settles under, showing the whole utterance twice.
+   *  utterance can write under its id. With no turn open, a key whose turn
+   *  already settled reopens per `reopensSettled` — for the settled-by-final
+   *  case that is the utterance continuing across a pause (barge-in cancels
+   *  the pending answer before any of it reached the user, and the item keeps
+   *  growing), and without the reopen those snapshots would mint a sibling
+   *  turn that the eventual corrected final then settles under, showing the
+   *  whole utterance twice.
    *  The reopened buffer starts from the settled text: the wires observed
    *  live re-stream the whole utterance (cumulative snapshots, which simply
    *  replace it), and a wire that appended instead would otherwise lose the
@@ -837,9 +838,8 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
           // The final targets the open turn (same key, or an unkeyed one it
           // adopts) — or reopens its settled turn to repair it in place, per
           // `reopensSettled`: the ASR sends a second `completed` for the same
-          // item when it corrects itself (the gateway relays both, verified
-          // live on an internal note), and that revision belongs to the message
-          // already shown, not to a new one.
+          // item when it corrects itself (the gateway relays both), and that
+          // revision belongs to the message already shown, not to a new one.
           if (!turnIds[ev.role] && prev && reopensSettled(ev.role, prev)) {
             turnIds[ev.role] = prev.id;
             turnCreatedAt[ev.role] = prev.createdAt;

@@ -15,15 +15,14 @@
 //   - transcript events carry the conversation item id (`itemId`), the
 //     utterance key the core aligns turns by.
 //   - the gateway forwards the ASR's live snapshots as `completed` events
-//     whose raw status is "in_progress" (it consumed them server-side when
-//     an internal note looked; forwarding verified live on an internal note) — only a raw
-//     status of "completed" is terminal. The terminal transcript can itself
-//     arrive MORE THAN ONCE for the same item: the ASR emits a second
-//     `completed` carrying the corrected full text when it revises what it
-//     heard, and an utterance resuming after a pause keeps
-//     growing the SAME item when barge-in cancelled the pending answer before
-//     any audio was produced. The core folds both back into the
-//     turn it already settled.
+//     whose raw status is "in_progress" (it once consumed them server-side;
+//     forwarding verified live) — only a raw status of "completed" is
+//     terminal. The terminal transcript can itself arrive MORE THAN ONCE for
+//     the same item: the ASR emits a second `completed` carrying the
+//     corrected full text when it revises what it heard, and an utterance
+//     resuming after a pause keeps growing the SAME item when barge-in
+//     cancelled the pending answer before any audio was produced. The core
+//     folds both back into the turn it already settled.
 //   - seed replay: text turns pass for both roles; a `function-call` item is
 //     silently dropped (not in the normalized item union), while its
 //     `function-call-output` lands and carries the context.
@@ -307,8 +306,8 @@ export function gateway(
             // and no failure, so a transcription that fails arrives here, under
             // the provider's native name. It matters because no completion
             // follows it: the core holds the utterance open from speech-started
-            // and anything waiting on it would wait for the rest of the call
-            //. `done` keeps whatever partial text arrived.
+            // and anything waiting on it would wait for the rest of the
+            // call. `done` keeps whatever partial text arrived.
             if (event.rawType === "conversation.item.input_audio_transcription.failed") {
               const failed = (event.raw as { item_id?: unknown } | undefined)?.item_id;
               emit({
