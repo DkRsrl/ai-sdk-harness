@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@dkr/ai-sdk-harness",
+      "name": "@dkrdev/ai-sdk-harness",
       "dependencies": {
         "acorn": "^8.18.0",
         "effect": "4.0.0-rc.115",

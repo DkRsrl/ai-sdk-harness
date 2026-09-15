@@ -42,7 +42,7 @@ export async function init<
     skillLoaderBinder(tools[SKILL_LOADER_TOOL_NAME]) === undefined
   ) {
     throw new Error(
-      `init: loadableSkills sources are configured but the "${SKILL_LOADER_TOOL_NAME}" registry entry is not the harness loader — wire skillLoaderTool() from "@dkr/ai-sdk-harness" under that key`,
+      `init: loadableSkills sources are configured but the "${SKILL_LOADER_TOOL_NAME}" registry entry is not the harness loader — wire skillLoaderTool() from "@dkrdev/ai-sdk-harness" under that key`,
     );
   }
   const skills = mergeSkillSources(sources);

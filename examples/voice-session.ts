@@ -75,4 +75,4 @@ console.log("messages persisted:", session.messages.length);
 //   ws.on("message", (frame) => handle.receive(frame));
 //
 // That is the voice analogue of `result.toUIMessageStream()`. The browser side
-// lives in `@dkr/ai-sdk-harness/voice/ui` and `@dkr/ai-sdk-harness/voice/react`.
+// lives in `@dkrdev/ai-sdk-harness/voice/ui` and `@dkrdev/ai-sdk-harness/voice/react`.
