@@ -269,7 +269,7 @@ test("voice() binds the sandbox at connect: routed tools hidden, their API adver
   });
 
   const harness = await init({
-    registry: bound.registry,
+    registry: bound.registry(),
     model,
     role: analyst(),
   });

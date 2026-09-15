@@ -46,7 +46,7 @@ import {
 import { InMemorySessionStorage, type SessionMessage } from "./storage";
 import type {
   DriveModel,
-  HarnessConfig,
+  ResolvedHarnessConfig,
   PromptOptions,
   Session,
   SessionFor,
@@ -163,7 +163,7 @@ export function createSession<
   TOutput = never,
   TSkillName extends string = string,
 >(
-  config: HarnessConfig<TTools, TModel, TOutput, TSkillName>,
+  config: ResolvedHarnessConfig<TTools, TModel, TOutput, TSkillName>,
   instructions: string,
   opts: SessionOptions = {},
 ): SessionFor<TTools, TModel, TOutput, TSkillName> {
@@ -388,7 +388,7 @@ export function createSession<
       hooks: config.hooks,
       storage,
       generateId: config.generateId,
-    } as HarnessConfig<TTools, TSubModel, TSubOutput, TSkillName>;
+    } as ResolvedHarnessConfig<TTools, TSubModel, TSubOutput, TSkillName>;
 
     const subSessionId = callOpts.sessionId ?? generateId();
     let subMessages: SessionMessage[] | undefined;

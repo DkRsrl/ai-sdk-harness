@@ -53,8 +53,9 @@ const analyst = role({
   toolCallers: { listOrders: ["code"], lookupOrder: ["code"] },
 });
 
+// No tool here declares a contextSchema, so `registry()` asks for nothing.
 const harness = await init({
-  registry,
+  registry: registry(),
   model: "anthropic/claude-sonnet-5",
   role: analyst(),
 });

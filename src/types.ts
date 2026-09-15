@@ -19,6 +19,7 @@ import type {
   RealtimeSession,
   RealtimeSessionCallbacks,
 } from "./voice";
+import type { RegistrySource } from "./registry";
 import type { BoundRole } from "./role";
 import type { BoundSkill, ParsedSkill, SkillSource } from "./skills";
 import type { SessionMessage, SessionStorage } from "./storage";
@@ -63,6 +64,19 @@ export type StreamResult<
   readonly committed: Promise<void>;
 };
 
+/** A `HarnessConfig` after `init` has normalized it: the registry reduced to
+ *  its toolset, `toolsContext` flattened from the three layers, and `storage`
+ *  filled in. This is what a session runs against. */
+export type ResolvedHarnessConfig<
+  TTools extends ToolSet = ToolSet,
+  TModel extends DriveModel = DriveModel,
+  TOutput = never,
+  TSkillName extends string = string,
+> = Omit<HarnessConfig<TTools, TModel, TOutput, TSkillName>, "registry"> & {
+  registry: TTools;
+  storage: SessionStorage;
+};
+
 /** Portable reasoning-effort levels — the AI SDK v7 top-level `reasoning`
  *  parameter (`'none'`, `'low'`, `'high'`, …). Derived from the SDK so the
  *  union tracks whatever version is installed. */
@@ -104,7 +118,7 @@ export interface HarnessConfig<
    *  `registry` from `createRegistry` (or a bare `ToolSet`). All of these are
    *  registered with the model; the role and any invoked skills decide which are
    *  *active* (callable). */
-  registry: TTools;
+  registry: RegistrySource<TTools>;
   /** The session's driver, and the thing that picks its surface. A
    *  `LanguageModel` (or a model-id string) gives a text session with
    *  `.prompt()`; a `RealtimeModelV1` gives a voice session with `.voice()`.
@@ -126,9 +140,11 @@ export interface HarnessConfig<
    *  the session's `prompt()` result (`TOutput`). */
   role: BoundRole<TOutput>;
   /** Per-tool execution context, keyed by tool name (AI SDK `toolsContext`).
-   *  Partial on purpose: you feed the whole `registry`, but only supply context
-   *  for the tools a role/skill will actually activate — inactive tools never
-   *  execute, so their context is never read. */
+   *  The narrowest of the three layers: it wins over a bound registry's
+   *  `overrides`, which win over the context handed to `registry(...)`.
+   *  Prefer supplying context once through `registry(context)` — each tool's
+   *  `contextSchema` projects it down to what that tool declared — and reach
+   *  for this only where one tool's context genuinely differs. */
   toolsContext?: Partial<InferToolSetContext<TTools>>;
   /** Which tool executions need the user's explicit approval before running.
    *  The common case is a list of registry tool names: calling one of those
@@ -311,7 +327,7 @@ export interface Harness<
   TOutput = never,
   TSkillName extends string = string,
 > {
-  readonly config: HarnessConfig<TTools, TModel, TOutput, TSkillName>;
+  readonly config: ResolvedHarnessConfig<TTools, TModel, TOutput, TSkillName>;
   readonly instructions: string;
   session(
     opts?: SessionOptions,

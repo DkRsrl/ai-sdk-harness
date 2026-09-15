@@ -35,12 +35,11 @@ const support = role({
 });
 
 const harness = await init({
-  registry,
+  registry: registry({ userId: "user_1" }),
   // A `RealtimeModelV1` here is what makes `harness.session()` return a voice
   // session. The type follows the spec — `.prompt()` is not on this session.
   model: grok("grok-voice-latest"),
   role: support(),
-  toolsContext: { lookupOrder: { userId: "user_1" } },
 });
 
 const session = await harness.session();

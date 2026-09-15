@@ -65,12 +65,28 @@ const support = role({
 `createRegistry` binds the factories to the registry, so a typo in `tools`
 is a compile error rather than a runtime one.
 
+`registry(...)` is where the tools meet the context they run with. Each tool
+declares what it needs once, next to itself, and the AI SDK validates the
+shared value through that schema before `execute` runs — a zod object strips to
+its declared keys — so `lookupOrder` only ever sees `userId` even when the
+registry's context carries more. A tool declaring no `contextSchema` receives
+nothing. Where one tool's context genuinely differs, override it:
+
+```ts
+registry({ userId, fs }, { bash: { fs: sandboxFs } })
+```
+
+An override replaces that tool's context rather than merging over the shared
+one. A registry whose tools declare no context at all is just `registry()`.
+
 ```ts
 const harness = await init({
-  registry,
+  // Context is supplied once, to the registry. Its shape is the union of what
+  // the tools' own `contextSchema`s declare, so it autocompletes and a missing
+  // key is a compile error.
+  registry: registry({ userId }),
   model: "anthropic/claude-sonnet-5",
   role: support(),
-  toolsContext: { lookupOrder: { userId } },
   storage,
 });
 

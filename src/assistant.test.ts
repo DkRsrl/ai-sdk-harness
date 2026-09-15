@@ -73,10 +73,9 @@ test("Assistant prepares context and runs a durable text turn", async () => {
   const controller = new AbortController();
   const seen: string[] = [];
   const assistant = createAssistant<{ userId: string }>()({
-    registry: {},
     async prepare({ sessionId, scope }) {
       seen.push(`prepare:${sessionId}:${scope.userId}`);
-      return { storage, context: { greeting: "hello" } };
+      return { registry: {}, storage, context: { greeting: "hello" } };
     },
     text({ context }) {
       seen.push(`text:${context.greeting}`);
@@ -128,8 +127,8 @@ test("Assistant voice resolves after startup and stop is a durability barrier", 
     { userName: string },
     Record<string, never>
   >({
-    registry: {},
     prepare: async () => ({
+      registry: {},
       storage,
       context: { userName: "Ada" },
     }),
@@ -172,7 +171,6 @@ test("Assistant voice resolves after startup and stop is a durability barrier", 
 test("Assistant propagates preparation failures without resolving a channel", async () => {
   let resolvedText = false;
   const assistant = new Assistant<unknown, never, Record<string, never>>({
-    registry: {},
     prepare(_args: AssistantPrepareArgs<unknown>) {
       throw new Error("conversation unavailable");
     },
@@ -223,8 +221,7 @@ test("Assistant propagates history and commit failures", async () => {
   }
   const storage = new FailingStorage();
   const assistant = new Assistant<unknown, undefined, Record<string, never>>({
-    registry: {},
-    prepare: async () => ({ storage, context: undefined }),
+    prepare: async () => ({ registry: {}, storage, context: undefined }),
     text: async () => ({ model, role: helper() }),
     voice() {
       throw new Error("not used");
@@ -272,8 +269,7 @@ test("Assistant cancels voice preparation before connecting and releases the ses
   }
   const storage = new DelayedStorage();
   const assistant = createAssistant<unknown>()({
-    registry: {},
-    prepare: async () => ({ storage, context: undefined }),
+    prepare: async () => ({ registry: {}, storage, context: undefined }),
     text: async () => ({ model: textModel, role: helper() }),
     voice: async () => ({ model: voiceModel, role: helper() }),
   });
@@ -304,8 +300,7 @@ test("Assistant hands the durable transcript between text and voice", async () =
   });
   const storage = new InMemorySessionStorage();
   const assistant = createAssistant<unknown>()({
-    registry: {},
-    prepare: async () => ({ storage, context: undefined }),
+    prepare: async () => ({ registry: {}, storage, context: undefined }),
     text: async () => ({ model: textModel, role: helper() }),
     voice: async () => ({ model: voiceModel, role: helper() }),
   });
@@ -359,8 +354,8 @@ test("Assistant voice reports deferred persistence failure from stop", async () 
     }
   }
   const assistant = createAssistant<unknown>()({
-    registry: {},
     prepare: async () => ({
+      registry: {},
       storage: new FailingVoiceStorage(),
       context: undefined,
     }),
@@ -402,8 +397,7 @@ test("Assistant voice snapshots seeded messages before startup events", async ()
     },
   };
   const assistant = createAssistant<unknown>()({
-    registry: {},
-    prepare: async () => ({ storage, context: undefined }),
+    prepare: async () => ({ registry: {}, storage, context: undefined }),
     text() {
       throw new Error("not used");
     },

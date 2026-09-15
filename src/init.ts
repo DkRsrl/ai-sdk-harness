@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ToolSet } from "ai";
+import { registryTools, resolveToolsContext } from "./registry";
 import { createSession } from "./session";
 import {
   assembleInstructions,
@@ -12,6 +13,7 @@ import type {
   DriveModel,
   Harness,
   HarnessConfig,
+  ResolvedHarnessConfig,
   SessionFor,
   SessionOptions,
 } from "./types";
@@ -30,10 +32,14 @@ export async function init<
 >(
   config: HarnessConfig<TTools, TModel, TOutput, TSkillName>,
 ): Promise<Harness<TTools, TModel, TOutput, TSkillName>> {
+  // The registry reaches here either bound to a context (`registry(...)`) or
+  // bare; everything downstream works against the toolset and the flattened
+  // per-tool context map.
+  const tools = registryTools(config.registry);
   const sources = config.loadableSkills ?? [];
   if (
     sources.length > 0 &&
-    skillLoaderBinder(config.registry[SKILL_LOADER_TOOL_NAME]) === undefined
+    skillLoaderBinder(tools[SKILL_LOADER_TOOL_NAME]) === undefined
   ) {
     throw new Error(
       `init: loadableSkills sources are configured but the "${SKILL_LOADER_TOOL_NAME}" registry entry is not the harness loader — wire skillLoaderTool() from "ai-sdk-harness" under that key`,
@@ -54,8 +60,18 @@ export async function init<
   // A session always has storage; default to in-memory when none is configured,
   // and thread that one instance through every session this harness creates.
   const storage = config.storage ?? new InMemorySessionStorage();
-  const resolvedConfig: HarnessConfig<TTools, TModel, TOutput, TSkillName> = {
+  const resolvedConfig: ResolvedHarnessConfig<
+    TTools,
+    TModel,
+    TOutput,
+    TSkillName
+  > = {
     ...config,
+    registry: tools,
+    toolsContext: resolveToolsContext(
+      config.registry,
+      config.toolsContext as Record<string, unknown> | undefined,
+    ) as HarnessConfig<TTools, TModel, TOutput, TSkillName>["toolsContext"],
     storage,
   };
 

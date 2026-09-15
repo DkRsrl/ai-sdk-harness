@@ -6,6 +6,7 @@ import type {
   VoiceStatus,
 } from "./voice";
 import { init } from "./init";
+import type { RegistrySource } from "./registry";
 import type { BoundRole } from "./role";
 import type { SkillSource } from "./skills";
 import type { SessionMessage, SessionStorage } from "./storage";
@@ -25,11 +26,16 @@ export interface AssistantPrepareArgs<TScope> {
   signal?: AbortSignal;
 }
 
-export interface AssistantPreparation<TContext> {
+export interface AssistantPreparation<TContext, TTools extends ToolSet> {
   /** The durable transcript shared by both drives. */
   storage: SessionStorage;
   /** Application-resolved resources used to configure both drives. */
   context: TContext;
+  /** The capability registry bound to the context its tools run with —
+   *  `registry(context)` from `createRegistry`. It lives here rather than on
+   *  the assistant because that context is per-conversation: it is resolved
+   *  once, with storage, and both drives then share it. */
+  registry: RegistrySource<TTools>;
 }
 
 export interface AssistantChannelArgs<
@@ -58,12 +64,11 @@ export interface AssistantConfig<
   TTools extends ToolSet,
   TOutput = never,
 > {
-  /** The complete capability registry; each resolved role activates a subset. */
-  registry: TTools;
-  /** Resolve one conversation's durable storage and application context. */
+  /** Resolve one conversation's durable storage, application context, and the
+   *  context-bound registry both drives run against. */
   prepare(
     args: AssistantPrepareArgs<TScope>,
-  ): MaybePromise<AssistantPreparation<TContext>>;
+  ): MaybePromise<AssistantPreparation<TContext, TTools>>;
   text(
     args: AssistantChannelArgs<TScope, TContext>,
   ): MaybePromise<AssistantTextConfig<TTools, TOutput>>;
@@ -172,9 +177,9 @@ export class Assistant<
             signal,
           });
           signal?.throwIfAborted();
-          const harness = await init({
+          const harness = await init<TTools, LanguageModel, TOutput>({
             ...drive,
-            registry: this.#config.registry,
+            registry: prepared.registry,
             storage: prepared.storage,
           });
           const session = await harness.session({ sessionId, title });
@@ -207,9 +212,9 @@ export class Assistant<
             signal,
           });
           signal?.throwIfAborted();
-          const harness = await init({
+          const harness = await init<TTools, RealtimeModelV1>({
             ...drive,
-            registry: this.#config.registry,
+            registry: prepared.registry,
             storage: prepared.storage,
           });
           signal?.throwIfAborted();

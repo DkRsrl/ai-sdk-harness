@@ -1069,7 +1069,9 @@ function codeModeSetup() {
     tools: ["chat"],
   });
   return {
-    codeRegistry: bound.registry,
+    codeRegistry: bound.registry(),
+    // The bare toolset, for the case that extends it with another entry.
+    codeTools: tools,
     boundSkill: bound.skill,
     looked,
     seenSessionIds,
@@ -1110,7 +1112,7 @@ test("a code-routed tool reaches the model through the sandbox, not directly", a
 });
 
 test("a role without the sandbox gets none; a skill can bring it with its routing", async () => {
-  const { codeRegistry, boundSkill, chatty } = codeModeSetup();
+  const { codeTools, boundSkill, chatty } = codeModeSetup();
   const model = new MockLanguageModelV4({
     doStream: async () => ({ stream: textStream("hi") }),
   });
@@ -1123,7 +1125,7 @@ test("a role without the sandbox gets none; a skill can bring it with its routin
   });
   const session = await (
     await init({
-      registry: { ...codeRegistry, loadSkill: skillLoaderTool() },
+      registry: { ...codeTools, loadSkill: skillLoaderTool() },
       model,
       role: chatty(),
       loadableSkills: [staticSource(search())],
@@ -1335,7 +1337,7 @@ test("a namespaced tool nests in the sandbox: catalog path, call path, search", 
   });
   const storage = new InMemorySessionStorage();
   const session = await (
-    await init({ registry: bound.registry, model, role: grouped(), storage })
+    await init({ registry: bound.registry(), model, role: grouped(), storage })
   ).session({ sessionId: "ns1" });
 
   await drain(await session.prompt("compute"));
@@ -1766,4 +1768,173 @@ test("duplicate skill names across sources fail session init", async () => {
       }),
     /"agenda".*more than one/,
   );
+});
+
+// --- registry context -------------------------------------------------------
+// `registry(context)` supplies context once instead of once per tool. Each tool
+// still only sees what its own `contextSchema` declares, because the SDK
+// validates the value through that schema before `execute` runs.
+
+/** Two tools that declare different context, one that declares none, and a
+ *  model that calls whichever tool the test names. */
+function contextSetup() {
+  const seen: Record<string, unknown> = {};
+  const bound = createRegistry({
+    scoped: harnessTool({
+      description: "Declares userId only.",
+      inputSchema: z.object({}),
+      contextSchema: z.object({ userId: z.string() }),
+      execute: async (
+        _input: Record<string, never>,
+        { context }: { context: { userId: string } },
+      ) => {
+        seen.scoped = context;
+        return "ok";
+      },
+    }),
+    filed: harnessTool({
+      description: "Declares fs only.",
+      inputSchema: z.object({}),
+      contextSchema: z.object({ fs: z.string() }),
+      execute: async (
+        _input: Record<string, never>,
+        { context }: { context: { fs: string } },
+      ) => {
+        seen.filed = context;
+        return "ok";
+      },
+    }),
+    undeclared: tool({
+      description: "Declares no context at all.",
+      inputSchema: z.object({}),
+      execute: async (_input, options) => {
+        seen.undeclared = (options as { context?: unknown }).context;
+        return "ok";
+      },
+    }),
+  });
+  const everything = bound.role({
+    name: "everything",
+    systemPrompt: "You call tools.",
+    tools: ["scoped", "filed", "undeclared"],
+  });
+  const modelCalling = (toolName: string) => {
+    let calls = 0;
+    return new MockLanguageModelV4({
+      doStream: async () => ({
+        stream:
+          calls++ === 0 ? toolCallStream(toolName, {}) : textStream("done"),
+      }),
+    });
+  };
+  return { bound, everything, seen, modelCalling };
+}
+
+test("registry context reaches a tool projected to what its schema declares", async () => {
+  const { bound, everything, seen, modelCalling } = contextSetup();
+  const session = await (
+    await init({
+      registry: bound.registry({ userId: "u1", fs: "/home" }),
+      model: modelCalling("scoped"),
+      role: everything(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  // `fs` was supplied but never declared by this tool, so it is stripped.
+  assert.deepEqual(seen.scoped, { userId: "u1" });
+});
+
+test("registry context projects differently per tool from one declaration", async () => {
+  const { bound, everything, seen, modelCalling } = contextSetup();
+  const session = await (
+    await init({
+      registry: bound.registry({ userId: "u1", fs: "/home" }),
+      model: modelCalling("filed"),
+      role: everything(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  assert.deepEqual(seen.filed, { fs: "/home" });
+});
+
+test("a tool declaring no context receives none of the shared context", async () => {
+  const { bound, everything, seen, modelCalling } = contextSetup();
+  const session = await (
+    await init({
+      registry: bound.registry({ userId: "u1", fs: "/home" }),
+      model: modelCalling("undeclared"),
+      role: everything(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  // Declaring a context is what admits a tool to the shared one; without a
+  // schema the SDK would pass it through untouched, so it must be withheld.
+  assert.equal(seen.undeclared, undefined);
+});
+
+test("a registry override replaces the shared context for that tool", async () => {
+  const { bound, everything, seen, modelCalling } = contextSetup();
+  const session = await (
+    await init({
+      registry: bound.registry(
+        { userId: "u1", fs: "/home" },
+        { filed: { fs: "/sandbox" } },
+      ),
+      model: modelCalling("filed"),
+      role: everything(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  assert.deepEqual(seen.filed, { fs: "/sandbox" });
+});
+
+test("config toolsContext wins over a registry override", async () => {
+  const { bound, everything, seen, modelCalling } = contextSetup();
+  const session = await (
+    await init({
+      registry: bound.registry(
+        { userId: "u1", fs: "/home" },
+        { filed: { fs: "/sandbox" } },
+      ),
+      toolsContext: { filed: { fs: "/narrowest" } },
+      model: modelCalling("filed"),
+      role: everything(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  assert.deepEqual(seen.filed, { fs: "/narrowest" });
+});
+
+test("a bare toolset still works, with no context at all", async () => {
+  const { seen, modelCalling } = contextSetup();
+  const bare = {
+    undeclared: tool({
+      description: "Declares no context at all.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        seen.bare = "ran";
+        return "ok";
+      },
+    }),
+  };
+  const only = role({
+    name: "only",
+    systemPrompt: "You call tools.",
+    tools: ["undeclared"],
+  });
+  const session = await (
+    await init({
+      registry: bare,
+      model: modelCalling("undeclared"),
+      role: only(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  assert.equal(seen.bare, "ran");
 });

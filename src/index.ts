@@ -26,7 +26,13 @@ export type {
 } from "./code-mode";
 export { toolNamespace } from "./code-mode";
 export { createRegistry } from "./registry";
-export type { Registry } from "./registry";
+export type {
+  BoundRegistry,
+  Registry,
+  RegistryContext,
+  RegistrySource,
+  ToolsContextOverrides,
+} from "./registry";
 export { role } from "./role";
 export type { BoundRole, RoleDefinition, RoleFactory } from "./role";
 export { harnessTool } from "./tool";

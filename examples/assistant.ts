@@ -75,38 +75,38 @@ const storage = new InMemorySessionStorage();
 // scope type so `TContext`, `TTools` and `TOutput` can still be inferred from
 // the config object in the second call.
 const assistant = createAssistant<Scope>()({
-  registry,
-
-  // Once per session, before either drive is configured. Resolve storage and
-  // whatever the application needs; both channels below receive the result.
+  // Once per session, before either drive is configured. Resolve storage, the
+  // application context, and the registry bound to the context its tools run
+  // with. The registry lives here rather than on the assistant because that
+  // context is per-conversation — and binding it once is what lets both drives
+  // share it instead of each restating a per-tool map.
   async prepare({ sessionId, scope, signal }) {
     console.log(`[prepare] session=${sessionId} user=${scope.userId}`);
     signal?.throwIfAborted();
     return {
+      registry: registry({ userId: scope.userId }),
       storage,
       context: { displayName: "Ada", openOrders: 2 } satisfies Context,
     };
   },
 
   // How the text drive is configured from that context.
-  text({ context, scope }) {
+  text({ context }) {
     return {
       model: "anthropic/claude-sonnet-5",
       role: chat({
         displayName: context.displayName,
         openOrders: context.openOrders,
       }),
-      toolsContext: { lookupOrder: { userId: scope.userId } },
     };
   },
 
   // And the voice drive. Same registry, same storage, different model and a
   // role written for speech.
-  voice({ context, scope }) {
+  voice({ context }) {
     return {
       model: grok("grok-voice-latest"),
       role: spoken({ displayName: context.displayName }),
-      toolsContext: { lookupOrder: { userId: scope.userId } },
     };
   },
 });

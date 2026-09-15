@@ -46,12 +46,13 @@ const support = role({
 });
 
 const harness = await init({
-  registry,
+  // Context is supplied once, here. Its shape is the union of what this
+  // registry's tools declared, so it autocompletes and a missing key is a
+  // compile error. Each tool still receives only what its own contextSchema
+  // names — the SDK validates through that schema before `execute` runs.
+  registry: registry({ userId: "user_1" }),
   model: "anthropic/claude-sonnet-5",
   role: support(),
-  // Per-tool execution context, keyed by tool name. Partial on purpose: you
-  // feed the whole registry, but only the tools a role activates are executed.
-  toolsContext: { lookupOrder: { userId: "user_1" } },
 });
 
 const session = await harness.session();
