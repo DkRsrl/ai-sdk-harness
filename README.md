@@ -144,6 +144,9 @@ one application has a reusable text-and-voice assistant whose context and
 storage should resolve once per durable session rather than per turn. Anything
 it does can be done with `init()` directly.
 
+A complete one, text and voice over a single conversation, is in
+[`examples/assistant.ts`](./examples/assistant.ts).
+
 
 ```ts
 const assistant = createAssistant<AppScope>()({
