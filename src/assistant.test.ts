@@ -6,9 +6,12 @@ import type {
   RealtimeEvent,
   RealtimeModelV1,
 } from "./voice";
+import z from "zod";
 import {
   Assistant,
   createAssistant,
+  createRegistry,
+  harnessTool,
   InMemorySessionStorage,
   role,
   type AssistantPrepareArgs,
@@ -413,4 +416,91 @@ test("Assistant voice snapshots seeded messages before startup events", async ()
   assert.deepEqual(call.initialMessages, []);
   await call.stop();
   assert.equal((await storage.loadMessages("conversation-8")).length, 1);
+});
+
+test("one per-session context serves both the tools and the drives", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const { registry, role: boundRole } = createRegistry({
+    lookupOrder: harnessTool({
+      description: "Look up an order.",
+      inputSchema: z.object({ id: z.string() }),
+      contextSchema: z.object({ userId: z.string() }),
+      execute: async (
+        _input: { id: string },
+        { context }: { context: { userId: string } },
+      ) => {
+        seen.push(context);
+        return "ok";
+      },
+    }),
+  });
+  const support = boundRole({
+    name: "support",
+    argsSchema: z.object({ displayName: z.string() }),
+    systemPrompt: "You help {{displayName}}.",
+    tools: ["lookupOrder"],
+  });
+
+  let calls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream:
+        calls++ === 0
+          ? convertArrayToReadableStream([
+              { type: "stream-start" as const, warnings: [] },
+              {
+                type: "tool-call" as const,
+                toolCallId: "c1",
+                toolName: "lookupOrder",
+                input: JSON.stringify({ id: "42" }),
+              },
+              {
+                type: "finish" as const,
+                finishReason: { unified: "tool-calls" as const, raw: undefined },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ])
+          : textStream("done"),
+    }),
+  });
+
+  const storage = new InMemorySessionStorage();
+  let rolePrompt = "";
+  const assistant = createAssistant<{ userId: string }>()({
+    async prepare({ scope }) {
+      // Resolved once; handed to the registry and to the drives alike.
+      const context = {
+        userId: scope.userId,
+        displayName: "Ada",
+        secret: "must not reach a tool",
+      };
+      return { registry: registry(context), storage, context };
+    },
+    text({ context }) {
+      rolePrompt = context.displayName;
+      return { model, role: support({ displayName: context.displayName }) };
+    },
+    voice() {
+      throw new Error("not used");
+    },
+  });
+
+  const session = await assistant.session({
+    sessionId: "one-context",
+    scope: { userId: "u1" },
+  });
+  const result = await session.prompt("where is order 42?");
+  const reader = result.textStream.getReader();
+  while (!(await reader.read()).done) {
+    /* drain */
+  }
+  await result.committed;
+
+  // The drive read what it needed from the same object...
+  assert.equal(rolePrompt, "Ada");
+  // ...and the tool received only the key its own schema declared.
+  assert.deepEqual(seen, [{ userId: "u1" }]);
 });

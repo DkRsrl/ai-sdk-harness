@@ -180,7 +180,19 @@ one application has a reusable text-and-voice assistant whose context and
 storage should resolve once per durable session rather than per turn. Anything
 it does can be done with `init()` directly.
 
-A complete one, text and voice over a single conversation, is in
+`prepare()` resolves the conversation's storage, its context, and the registry
+bound to that context — the same bound form `init({ registry })` takes:
+
+```ts
+async prepare({ scope }) {
+  const context = { userId: scope.userId, displayName, openOrders };
+  return { registry: registry(context), storage, context };
+}
+```
+
+One context, resolved once, serving both audiences: the tools take the keys
+their own `contextSchema`s declare, the drives read the rest when building
+roles. A complete one, text and voice over a single conversation, is in
 [`examples/assistant.ts`](./examples/assistant.ts).
 
 

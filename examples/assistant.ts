@@ -27,9 +27,10 @@ import { z } from "zod";
 // both channel factories; the harness never interprets it.
 type Scope = { userId: string; locale: string };
 
-// What the application resolves once per session and both drives configure
-// themselves from.
-type Context = { displayName: string; openOrders: number };
+// What the application resolves once per session. One object serves both
+// audiences: the tools take the keys their own contextSchemas declare
+// (`userId` here), and the drives read the rest when building roles.
+type Context = { userId: string; displayName: string; openOrders: number };
 
 const { registry, role } = createRegistry({
   lookupOrder: harnessTool({
@@ -75,19 +76,21 @@ const storage = new InMemorySessionStorage();
 // scope type so `TContext`, `TTools` and `TOutput` can still be inferred from
 // the config object in the second call.
 const assistant = createAssistant<Scope>()({
-  // Once per session, before either drive is configured. Resolve storage, the
-  // application context, and the registry bound to the context its tools run
-  // with. The registry lives here rather than on the assistant because that
-  // context is per-conversation — and binding it once is what lets both drives
-  // share it instead of each restating a per-tool map.
+  // Once per session, before either drive is configured. Resolve the context
+  // once and hand it to the registry — `registry(context)` takes exactly the
+  // same bound form `init({ registry })` does, and each tool still receives
+  // only the keys its own contextSchema declares, so `displayName` never
+  // reaches `lookupOrder`. The registry is built here rather than on the
+  // assistant because the context it binds is per-conversation.
   async prepare({ sessionId, scope, signal }) {
     console.log(`[prepare] session=${sessionId} user=${scope.userId}`);
     signal?.throwIfAborted();
-    return {
-      registry: registry({ userId: scope.userId }),
-      storage,
-      context: { displayName: "Ada", openOrders: 2 } satisfies Context,
+    const context: Context = {
+      userId: scope.userId,
+      displayName: "Ada",
+      openOrders: 2,
     };
+    return { registry: registry(context), storage, context };
   },
 
   // How the text drive is configured from that context.
