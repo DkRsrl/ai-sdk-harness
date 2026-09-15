@@ -231,7 +231,7 @@ export function createSession<
       codeModeBinder(config.registry[CODE_MODE_TOOL_NAME]) === undefined
     ) {
       throw new Error(
-        `${label}: the "${CODE_MODE_TOOL_NAME}" registry entry is not the harness sandbox — wire codeModeTool() from "ai-sdk-harness" under that key`,
+        `${label}: the "${CODE_MODE_TOOL_NAME}" registry entry is not the harness sandbox — wire codeModeTool() from "@dkr/ai-sdk-harness" under that key`,
       );
     }
     if (Array.isArray(config.toolApproval)) {
