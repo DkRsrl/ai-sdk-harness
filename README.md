@@ -1,4 +1,4 @@
-# ai-sdk-harness
+# @dkr/ai-sdk-harness
 
 Application-agnostic agent harness over the [AI SDK](https://ai-sdk.dev): a
 tool registry gated per-step by an injected role and skills, with pluggable
@@ -6,23 +6,23 @@ session storage. The model spec picks the drive — a `LanguageModel` yields a
 text session (`.prompt`), a `RealtimeModelV1` a voice session (`.voice`).
 
 ```sh
-bun add ai-sdk-harness
+bun add @dkr/ai-sdk-harness
 ```
 
 ## Entrypoints
 
 | Import | What it is |
 | --- | --- |
-| `ai-sdk-harness` | The harness: `init`, `createAssistant`, registry, roles, skills, code mode, storage |
-| `ai-sdk-harness/voice` | The realtime-voice core — `createRealtimeSession` and the `RealtimeModelV1` spec |
-| `ai-sdk-harness/voice/grok` | Grok realtime provider |
-| `ai-sdk-harness/voice/gemini` | Gemini Live provider |
-| `ai-sdk-harness/voice/gateway` | Vercel AI Gateway realtime provider |
-| `ai-sdk-harness/voice/protocol` | The client↔relay wire protocol |
-| `ai-sdk-harness/voice/ui` | Browser-side transport and voice-chat controller |
-| `ai-sdk-harness/voice/react` | `useVoiceChat` (React 19, optional peer) |
+| `@dkr/ai-sdk-harness` | The harness: `init`, `createAssistant`, registry, roles, skills, code mode, storage |
+| `@dkr/ai-sdk-harness/voice` | The realtime-voice core — `createRealtimeSession` and the `RealtimeModelV1` spec |
+| `@dkr/ai-sdk-harness/voice/grok` | Grok realtime provider |
+| `@dkr/ai-sdk-harness/voice/gemini` | Gemini Live provider |
+| `@dkr/ai-sdk-harness/voice/gateway` | Vercel AI Gateway realtime provider |
+| `@dkr/ai-sdk-harness/voice/protocol` | The client↔relay wire protocol |
+| `@dkr/ai-sdk-harness/voice/ui` | Browser-side transport and voice-chat controller |
+| `@dkr/ai-sdk-harness/voice/react` | `useVoiceChat` (React 19, optional peer) |
 
-`react` is an optional peer dependency — only `ai-sdk-harness/voice/react`
+`react` is an optional peer dependency — only `@dkr/ai-sdk-harness/voice/react`
 needs it.
 
 ## Usage
@@ -37,7 +37,7 @@ subset that is active by default, plus the system prompt. Tools are referenced
 reach the model on a normal step.
 
 ```ts
-import { createRegistry, harnessTool, init, type Session } from "ai-sdk-harness";
+import { createRegistry, harnessTool, init, type Session } from "@dkr/ai-sdk-harness";
 import { z } from "zod";
 
 const { registry, role } = createRegistry({
@@ -133,7 +133,7 @@ The same `init()` produces a voice session when the model is a
 `.prompt()` and `.voice()` are never both present:
 
 ```ts
-import { grok } from "ai-sdk-harness/voice/grok";
+import { grok } from "@dkr/ai-sdk-harness/voice/grok";
 
 const harness = await init({
   registry,
@@ -258,7 +258,6 @@ need storage-level revisions, leases, or another coordinator.
 
 ## Provenance
 
-Extracted from the `reco-ai` monorepo, unifying three workspace packages:
-`@reco-ai/ai-sdk-harness`, `@reco-ai/ai-sdk-voice` (now `src/voice`, behind the
-`/voice` entrypoints) and `@reco-ai/codemode` (vendored into `src/codemode`).
-See LICENSE for third-party attribution.
+`src/codemode` is a port of opencode's codemode package — see
+[`src/codemode/README.md`](./src/codemode/README.md) for what changed and why,
+and LICENSE for full third-party attribution.

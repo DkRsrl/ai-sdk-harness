@@ -25,7 +25,7 @@ SOFTWARE.
 This package vendors third-party code:
 
 - `src/codemode/` is a port of opencode's codemode package
-  (https://github.com/anomalyco/opencode, `packages/codemode`, MIT), with the
-  Effect library removed. The OpenAPI module was not ported.
+  (https://github.com/anomalyco/opencode, `packages/codemode`, MIT). The
+  OpenAPI module was not ported.
 - `test/codemode/*test262*.ts` are derived from test262
   (https://github.com/tc39/test262); see `test/codemode/LICENSE.test262`.
