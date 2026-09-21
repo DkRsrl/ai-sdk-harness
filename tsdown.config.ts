@@ -3,6 +3,7 @@ import { defineConfig } from "tsdown";
 export default defineConfig({
   entry: [
     "src/index.ts",
+    "src/codemode/index.ts",
     "src/voice/index.ts",
     "src/voice/protocol.ts",
     "src/voice/ui/index.ts",

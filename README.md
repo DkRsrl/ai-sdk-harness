@@ -14,6 +14,7 @@ bun add @dkrdev/ai-sdk-harness
 | Import | What it is |
 | --- | --- |
 | `@dkrdev/ai-sdk-harness` | The harness: `init`, `createAssistant`, registry, roles, skills, code mode, storage |
+| `@dkrdev/ai-sdk-harness/codemode` | The confined interpreter: `toolError` for tool refusals, plus the runtime |
 | `@dkrdev/ai-sdk-harness/voice` | The realtime-voice core — `createRealtimeSession` and the `RealtimeModelV1` spec |
 | `@dkrdev/ai-sdk-harness/voice/grok` | Grok realtime provider |
 | `@dkrdev/ai-sdk-harness/voice/gemini` | Gemini Live provider |
@@ -172,6 +173,12 @@ it may draw from.
 direct call — the model writes JavaScript against `tools.name(input)` and a
 confined interpreter runs it, with the host's tools as its only door to the
 world. See `src/codemode/README.md`.
+
+A tool that must refuse throws `toolError(message)` from
+`@dkrdev/ai-sdk-harness/codemode`: the interpreter reports that message to the
+model instead of the generic failure it gives any other thrown value. Import it
+from this package rather than vendoring a second copy — the check is an
+`instanceof` against the class this entrypoint exports.
 
 ## Assistant — the higher-order usage
 

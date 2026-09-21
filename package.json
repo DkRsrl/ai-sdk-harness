@@ -1,6 +1,6 @@
 {
   "name": "@dkrdev/ai-sdk-harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Application-agnostic agent harness over the AI SDK, with reusable text-and-voice assistants, role-gated tools, skills, and pluggable session storage.",
   "repository": {
@@ -34,6 +34,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./codemode": {
+      "types": "./dist/codemode/index.d.ts",
+      "default": "./dist/codemode/index.js"
     },
     "./voice": {
       "types": "./dist/voice/index.d.ts",
