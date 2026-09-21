@@ -31,6 +31,7 @@ export type {
   Registry,
   RegistryContext,
   RegistrySource,
+  ToolRegistry,
   ToolsContextOverrides,
 } from "./registry";
 export { role } from "./role";

@@ -167,6 +167,28 @@ one with `session.skill(name)` between turns; the model can load one itself
 mid-turn through `skillLoaderTool()`, with `loadableSkills` naming the sources
 it may draw from.
 
+### Narrowing a registry to what an environment can serve
+
+A registry's context is the intersection of its tools' `contextSchema`s, so a
+registry holding every tool in the application asks for every tool's context at
+once — and an entry point that never activates a tool would still have to invent
+a value for it. `only` narrows the registry, and the context narrows with it:
+
+```ts
+const { registry, role, skill } = createRegistry({ ...everyTool })
+
+const textRegistry  = registry.only("readFile", "getClient", "code", "loadSkill")
+const voiceRegistry = registry.only("readFile", "getClient", "code", "loadSkill", "delegateTurn")
+
+textRegistry({ fs, userId })                       // delegateTurn's context is not asked for
+voiceRegistry({ fs, userId, config, role: head() }) // here it is required
+```
+
+A narrowed registry is still a registry: it binds the same way and narrows
+again, so `only` composes. The narrowing is also a capability boundary — a role
+or skill naming a tool outside it fails when the session starts, through the
+same guard that catches a typo.
+
 ### Code mode
 
 `role({ toolCallers })` can route a tool into a sandboxed program instead of a

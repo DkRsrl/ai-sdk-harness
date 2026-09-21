@@ -114,13 +114,32 @@ export function resolveToolsContext<TTools extends ToolSet>(
   return resolved;
 }
 
+/** A registry, as the thing you bind context to. Calling it binds; `only`
+ *  narrows it to the tools one environment can actually serve and hands back
+ *  another registry, so narrowing is closed and composes.
+ *
+ *  Narrowing is what keeps context honest. The context a registry asks for is
+ *  the intersection of its tools' `contextSchema`s, so a registry holding
+ *  every tool in the application demands every tool's context at once — and an
+ *  entry point that never activates a tool would have to invent a value for
+ *  it. `only` cuts the registry down to what the environment can serve, and
+ *  the context it asks for narrows with it. */
+export interface ToolRegistry<TTools extends ToolSet> {
+  /** Bind these tools to the context they run with. The argument is the union
+   *  of what their `contextSchema`s declare, so it is derived, typed and
+   *  autocompleted; it disappears when none of them declares any. */
+  (...args: RegistryContextArgs<TTools>): BoundRegistry<TTools>;
+  /** The same registry, narrowed to the named tools. A role or skill naming
+   *  anything outside the narrowing fails when the session starts, through the
+   *  same `assertToolsRegistered` guard that catches a typo. */
+  only<const TSel extends readonly (keyof TTools & string)[]>(
+    ...names: TSel
+  ): ToolRegistry<Pick<TTools, TSel[number]>>;
+}
+
 export interface Registry<TTools extends ToolSet> {
-  /** Bind this registry's tools to the context they run with. The argument is
-   *  the union of what the tools' `contextSchema`s declare, so it is derived,
-   *  typed and autocompleted; it disappears when no tool declares any. */
-  registry: (
-    ...args: RegistryContextArgs<TTools>
-  ) => BoundRegistry<TTools>;
+  /** The complete registry. Bind it, or `only(...)` a narrower one first. */
+  registry: ToolRegistry<TTools>;
   /** Role factory whose `tools` are constrained to this registry's keys. */
   role<TArgs = void, TOutput = never>(
     def: RoleDefinition<TArgs, keyof TTools & string, TOutput>,
@@ -141,6 +160,34 @@ export type RegistryContextArgs<TTools extends ToolSet> = [
     ? []
     : [context: RegistryContext<TTools>, overrides?: ToolsContextOverrides<TTools>];
 
+/** The callable registry over `tools`, closed under `only`. */
+function toolRegistry<TTools extends ToolSet>(tools: TTools): ToolRegistry<TTools> {
+  const bind = (...args: RegistryContextArgs<TTools>) =>
+    ({
+      [BOUND_REGISTRY]: true,
+      tools,
+      context: args[0] as RegistryContext<TTools> | undefined,
+      overrides: args[1] as ToolsContextOverrides<TTools> | undefined,
+    }) satisfies BoundRegistry<TTools>;
+
+  return Object.assign(bind, {
+    only<const TSel extends readonly (keyof TTools & string)[]>(...names: TSel) {
+      const selected = {} as Pick<TTools, TSel[number]>;
+      for (const name of names) {
+        // A name the registry does not hold is a typo, and the narrowing is
+        // where it is still cheap to say so.
+        if (!(name in tools)) {
+          throw new Error(
+            `Unknown tool in registry.only(): "${name}". The registry holds: ${Object.keys(tools).join(", ")}.`,
+          );
+        }
+        selected[name] = tools[name];
+      }
+      return toolRegistry(selected);
+    },
+  }) as ToolRegistry<TTools>;
+}
+
 export function createRegistry<TTools extends ToolSet>(
   tools: TTools,
 ): Registry<TTools> {
@@ -150,13 +197,7 @@ export function createRegistry<TTools extends ToolSet>(
     assertValidNamespace(name, registryTool);
   }
   return {
-    registry: (...args: RegistryContextArgs<TTools>) =>
-      ({
-        [BOUND_REGISTRY]: true,
-        tools,
-        context: args[0] as RegistryContext<TTools> | undefined,
-        overrides: args[1] as ToolsContextOverrides<TTools> | undefined,
-      }) satisfies BoundRegistry<TTools>,
+    registry: toolRegistry(tools),
     role<TArgs = void, TOutput = never>(
       def: RoleDefinition<TArgs, keyof TTools & string, TOutput>,
     ) {

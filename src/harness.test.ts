@@ -2112,3 +2112,92 @@ test("toUIMessageStreamResponse returns a streaming Response with the caller's h
   assert.ok(body.includes(result.responseMessageId), "the id reaches the wire");
   assert.ok(body.includes("hello"), "the text reaches the wire");
 });
+
+// --- registry.only ----------------------------------------------------------
+// The context a registry asks for is the intersection of its tools' schemas, so
+// a registry holding every tool demands every tool's context at once. `only`
+// narrows the registry to what one environment can serve, and the context
+// narrows with it.
+
+test("only narrows the context the registry asks for", async () => {
+  const { bound, seen, modelCalling } = contextSetup();
+  const scopedOnly = bound.registry.only("scoped");
+  const reader = bound.role({
+    name: "reader",
+    systemPrompt: "You call tools.",
+    tools: ["scoped"],
+  });
+  const session = await (
+    await init({
+      // No `fs`: the only tool that declares it is outside this registry.
+      registry: scopedOnly({ userId: "u1" }),
+      model: modelCalling("scoped"),
+      role: reader(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  assert.deepEqual(seen.scoped, { userId: "u1" });
+});
+
+test("a tool outside the narrowing is not registered, so a role naming it fails", async () => {
+  const { bound, everything, modelCalling } = contextSetup();
+  await assert.rejects(
+    async () =>
+      await init({
+        registry: bound.registry.only("scoped")({ userId: "u1" }),
+        model: modelCalling("scoped"),
+        // `everything` lists filed and undeclared too.
+        role: everything(),
+      }).then((harness) => harness.session()),
+    /not in the harness registry: filed, undeclared/,
+  );
+});
+
+test("only is closed: a narrowed registry narrows again", async () => {
+  const { bound, seen, modelCalling } = contextSetup();
+  const narrowed = bound.registry.only("scoped", "filed").only("scoped");
+  const reader = bound.role({
+    name: "reader",
+    systemPrompt: "You call tools.",
+    tools: ["scoped"],
+  });
+  const session = await (
+    await init({
+      registry: narrowed({ userId: "u1" }),
+      model: modelCalling("scoped"),
+      role: reader(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  assert.deepEqual(seen.scoped, { userId: "u1" });
+});
+
+test("only rejects a name the registry does not hold", () => {
+  const { bound } = contextSetup();
+  assert.throws(
+    () => (bound.registry.only as (...n: string[]) => unknown)("nope"),
+    /Unknown tool in registry\.only\(\): "nope"/,
+  );
+});
+
+test("an override still applies inside a narrowing", async () => {
+  const { bound, seen, modelCalling } = contextSetup();
+  const filedOnly = bound.registry.only("filed");
+  const reader = bound.role({
+    name: "reader",
+    systemPrompt: "You call tools.",
+    tools: ["filed"],
+  });
+  const session = await (
+    await init({
+      registry: filedOnly({ fs: "/home" }, { filed: { fs: "/sandbox" } }),
+      model: modelCalling("filed"),
+      role: reader(),
+    })
+  ).session();
+
+  await drain(await session.prompt("go"));
+  assert.deepEqual(seen.filed, { fs: "/sandbox" });
+});
