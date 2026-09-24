@@ -21,5 +21,6 @@ export type {
   RealtimeSession,
   RealtimeServeHandle,
   RealtimeSessionCallbacks,
+  RealtimeReconnectOptions,
   CreateRealtimeSessionArgs,
 } from "./session";

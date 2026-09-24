@@ -51,7 +51,10 @@ function fakeLive() {
     },
     open: () => callbacks.onopen?.(),
     setup: () => callbacks.onmessage?.({ setupComplete: {} }),
-    close: (reason?: string) => callbacks.onclose?.(reason ? { reason } : undefined),
+    close: (reason?: string, code?: number) =>
+      callbacks.onclose?.(
+        reason || code ? { ...(reason ? { reason } : {}), ...(code ? { code } : {}) } : undefined,
+      ),
     fire: (m: GeminiServerMessage) => callbacks.onmessage?.(m),
   };
 }
@@ -288,4 +291,42 @@ test("buffers text items until setupComplete, then flushes them in order", async
   // After setup, items go straight through.
   handle.send({ type: "text", role: "user", text: "live" });
   assert.equal(fake.clientContent.length, 2);
+});
+
+test("an unexpected close reports its code and reason before the disconnect", async () => {
+  const fake = fakeLive();
+  const events: RealtimeEvent[] = [];
+  await gemini("m", { apiKey: "k", connect: fake.connect }).connect({
+    call: makeCall(),
+    emit: (e) => events.push(e),
+    onAudio: () => {},
+    signal: new AbortController().signal,
+  });
+  events.length = 0;
+
+  fake.close("Upstream connection closed", 1011);
+
+  assert.deepEqual(events, [
+    { type: "error", message: "Gemini closed: code=1011 reason=Upstream connection closed", fatal: false },
+    { type: "transport", status: "disconnected" },
+  ]);
+});
+
+test("a close the host asked for stays silent", async () => {
+  const fake = fakeLive();
+  const events: RealtimeEvent[] = [];
+  const controller = new AbortController();
+  await gemini("m", { apiKey: "k", connect: fake.connect }).connect({
+    call: makeCall(),
+    emit: (e) => events.push(e),
+    onAudio: () => {},
+    signal: controller.signal,
+  });
+  events.length = 0;
+
+  controller.abort();
+  // The SDK reports the normal closure it was asked for.
+  fake.close("", 1000);
+
+  assert.deepEqual(events, [{ type: "transport", status: "disconnected" }]);
 });

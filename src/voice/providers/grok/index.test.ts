@@ -680,3 +680,50 @@ test("a transcription that fails still ends the utterance", async () => {
     utterance: "i1",
   });
 });
+
+test("an unexpected close reports its code and reason before the disconnect", async () => {
+  // An upstream drop (the gateway relays xAI's as 1011) must reach the host
+  // with its cause, not as a bare disconnect.
+  const fake = new FakeWS();
+  const events: RealtimeEvent[] = [];
+  await fakeModel(fake).connect({
+    call: makeCall(),
+    emit: (e) => events.push(e),
+    onAudio: () => {},
+    signal: new AbortController().signal,
+  });
+  events.length = 0;
+
+  fake.readyState = 3;
+  fake.fire("close", { code: 1011, reason: "Upstream connection closed", wasClean: true });
+
+  assert.equal(events.length, 2);
+  const [error, disconnect] = events;
+  assert.equal(error?.type, "error");
+  assert.ok(error?.type === "error" && !error.fatal);
+  assert.match(
+    error?.type === "error" ? error.message : "",
+    /closed: code=1011 reason=Upstream connection closed$/,
+  );
+  assert.deepEqual(disconnect, { type: "transport", status: "disconnected" });
+});
+
+test("a close the host asked for stays silent", async () => {
+  for (const how of ["abort", "handle"] as const) {
+    const fake = new FakeWS();
+    const events: RealtimeEvent[] = [];
+    const controller = new AbortController();
+    const handle = await fakeModel(fake).connect({
+      call: makeCall(),
+      emit: (e) => events.push(e),
+      onAudio: () => {},
+      signal: controller.signal,
+    });
+    events.length = 0;
+
+    if (how === "abort") controller.abort();
+    else await handle.close();
+
+    assert.deepEqual(events, [{ type: "transport", status: "disconnected" }], how);
+  }
+});

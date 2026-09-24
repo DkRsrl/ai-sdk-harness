@@ -1901,7 +1901,8 @@ test("a lost wire releases the utterances it was going to end", async () => {
       return "ok";
     },
   });
-  const s = createRealtimeSession({ model: m.model, ...makeCall(), tools: { read } });
+  // Without a reconnect the session is over, and the tool is let go to run.
+  const s = createRealtimeSession({ model: m.model, ...makeCall(), tools: { read }, reconnect: false });
   await s.start();
 
   m.emit({ type: "speech.interrupted" });
@@ -2022,4 +2023,397 @@ test("an ending that names no utterance releases whatever is open", async () => 
   m.emit({ type: "transcript.final", role: "user", text: "boh", utterance: "somethingelse" });
   await tick();
   assert.deepEqual(ran, ["c1"]);
+});
+
+// --- reconnect: an upstream drop under a live session ---
+
+const settle = async () => {
+  for (let i = 0; i < 20; i++) await tick();
+};
+
+/** A model whose every connect opens a fresh scripted connection. `outcomes`
+ *  decides the reconnects in order (the first connect always succeeds):
+ *  "ok" connects, "fail" rejects, "hang" never settles until aborted. */
+function flakyModel(outcomes: Array<"ok" | "fail" | "hang"> = []) {
+  type Conn = {
+    call: RealtimeCall;
+    signal: AbortSignal;
+    emit: (e: RealtimeEvent) => void;
+    sent: RealtimeOutbound[];
+    closed: boolean;
+    responsesRequested: number;
+  };
+  const connections: Conn[] = [];
+  let connects = 0;
+  let lateHandle: ((h: RealtimeHandle) => void) | null = null;
+  let lateClosed = false;
+  const model: RealtimeModelV1 = {
+    specificationVersion: "realtime-v1",
+    provider: "flaky",
+    modelId: "flaky",
+    async connect(a) {
+      const outcome = connects === 0 ? "ok" : (outcomes[connects - 1] ?? "ok");
+      connects += 1;
+      if (outcome === "fail") throw new Error("upstream refused");
+      if (outcome === "hang") {
+        return new Promise<RealtimeHandle>((resolve) => {
+          lateHandle = resolve;
+        });
+      }
+      const conn: Conn = {
+        call: a.call,
+        signal: a.signal,
+        emit: a.emit,
+        sent: [],
+        closed: false,
+        responsesRequested: 0,
+      };
+      connections.push(conn);
+      return {
+        send: (item) => conn.sent.push(item),
+        pushAudio: () => {},
+        requestResponse: () => {
+          conn.responsesRequested += 1;
+        },
+        close: async () => {
+          conn.closed = true;
+        },
+      };
+    },
+  };
+  return {
+    model,
+    connections,
+    get connects() {
+      return connects;
+    },
+    /** Resolve a "hang" connect late, as a socket opening after the fact would. */
+    resolveLate() {
+      lateHandle?.({
+        send: () => {},
+        pushAudio: () => {},
+        requestResponse: () => {},
+        close: async () => {
+          lateClosed = true;
+        },
+      });
+    },
+    get lateClosed() {
+      return lateClosed;
+    },
+    /** Emit on the newest connection. */
+    emit: (e: RealtimeEvent) => connections.at(-1)?.emit(e),
+    /** The upstream drop seen in the field: 1011 with no abort. */
+    drop(conn = connections.at(-1)) {
+      conn?.emit({ type: "error", message: "flaky closed: code=1011 reason=Upstream connection closed", fatal: false });
+      conn?.emit({ type: "transport", status: "disconnected" });
+    },
+  };
+}
+
+const instant = { delayMs: () => 0 };
+
+test("an upstream drop mid-reply reconnects with the conversation so far, never reaching error", async () => {
+  const m = flakyModel();
+  const states: VoiceStatus[] = [];
+  const messages: RealtimeMessage[] = [];
+  const errors: string[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    seed: [{ type: "text", role: "assistant", text: "Hi, how can I help?" }],
+    reconnect: instant,
+    onStatus: (st) => states.push(st),
+    onMessage: (msg) => messages.push(msg),
+    onError: (e) => errors.push(e),
+  });
+  await s.start();
+
+  m.emit({ type: "transcript.final", role: "user", text: "Which customers do I have?", utterance: "u1" });
+  m.emit({ type: "response.start" });
+  m.emit({ type: "speech.start" });
+  m.emit({ type: "transcript.delta", role: "assistant", text: "You have three" });
+  states.length = 0;
+  m.drop();
+  await settle();
+
+  assert.equal(m.connects, 2, "a second connection was opened");
+  assert.ok(!states.includes("error"), `never error: ${states.join(" → ")}`);
+  assert.equal(states[0], "connecting");
+  assert.equal(s.status, "listening");
+  assert.ok(errors.some((e) => /code=1011/.test(e)), "the cause still reaches the host");
+
+  // The words the user heard are on the record, once.
+  const cut = messages.filter((msg) => msg.type === "text" && msg.role === "assistant");
+  assert.equal(cut.length, 1);
+  assert.equal(cut[0]?.type === "text" && cut[0].text, "You have three");
+
+  // The new wire gets the whole conversation, the cut-off reply marked as such,
+  // and is asked to pick the answer back up.
+  const call = m.connections[1]!.call;
+  assert.equal(call.seed.length, 3);
+  assert.deepEqual(call.seed[0], { type: "text", role: "assistant", text: "Hi, how can I help?" });
+  assert.deepEqual(call.seed[1], { type: "text", role: "user", text: "Which customers do I have?" });
+  const last = call.seed[2];
+  assert.ok(last?.type === "text" && last.role === "assistant");
+  assert.ok(last.text.startsWith("You have three"));
+  assert.notEqual(last.text, "You have three", "not replayed as if it were complete");
+  assert.equal(call.triggerResponse, true);
+  assert.equal(m.connections[0]!.closed, true, "the dead connection is released");
+
+  // The host's session object is the same one, now driving the new wire.
+  s.sendText("And suppliers?");
+  assert.deepEqual(m.connections[1]!.sent.at(-1), { type: "text", role: "user", text: "And suppliers?" });
+  assert.equal(m.connections[0]!.sent.length, 0);
+});
+
+test("a drop while idle reconnects without asking for a response", async () => {
+  const m = flakyModel();
+  const s = createRealtimeSession({ model: m.model, ...makeCall(), reconnect: instant });
+  await s.start();
+  m.emit({ type: "transcript.final", role: "user", text: "Hi", utterance: "u1" });
+  m.emit({ type: "response.start" });
+  m.emit({ type: "transcript.delta", role: "assistant", text: "Hello!" });
+  m.emit({ type: "transcript.done", role: "assistant" });
+  m.emit({ type: "response.done" });
+
+  m.drop();
+  await settle();
+
+  const call = m.connections[1]!.call;
+  assert.deepEqual(call.seed, [
+    { type: "text", role: "user", text: "Hi" },
+    { type: "text", role: "assistant", text: "Hello!" },
+  ]);
+  assert.equal(call.triggerResponse, false, "the answer was complete");
+  assert.equal(s.status, "listening");
+});
+
+test("a tool in flight when the wire drops is cancelled, and its result never reaches the new wire", async () => {
+  const m = flakyModel();
+  const cancelled: string[] = [];
+  let release: () => void = () => {};
+  const slow = tool({
+    description: "slow",
+    inputSchema: z.object({}),
+    execute: (_input, { abortSignal }) =>
+      new Promise<string>((resolve, reject) => {
+        release = () => resolve("done");
+        abortSignal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
+  });
+  const ignoring = tool({
+    description: "ignores its abort",
+    inputSchema: z.object({}),
+    execute: () =>
+      new Promise<string>((resolve) => {
+        release = () => resolve("done anyway");
+      }),
+  });
+  const messages: RealtimeMessage[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    tools: { slow, ignoring },
+    reconnect: instant,
+    onToolCancel: (c) => cancelled.push(c.callId),
+    onMessage: (msg) => messages.push(msg),
+  });
+  await s.start();
+  m.emit({ type: "response.start" });
+  m.emit({ type: "tool.call", callId: "c1", name: "slow", input: {} });
+  await tick();
+  assert.equal(s.status, "thinking");
+
+  m.drop();
+  await settle();
+  assert.deepEqual(cancelled, ["c1"]);
+  assert.equal(m.connections[1]!.call.triggerResponse, true, "the answer is still owed");
+
+  // A tool that ignores the abort still finishes onto the record, but its
+  // callId belongs to the dead wire: nothing is handed to either connection.
+  m.emit({ type: "tool.call", callId: "c2", name: "ignoring", input: {} });
+  await tick();
+  m.drop();
+  await settle();
+  release();
+  await settle();
+  assert.ok(messages.some((msg) => msg.type === "tool" && msg.callId === "c2"));
+  for (const conn of m.connections) {
+    assert.ok(!conn.sent.some((i) => i.type === "tool.result"), "no orphaned tool result");
+  }
+  // c2 finished after the wire it could have been told to was already seeded.
+  assert.deepEqual(m.connections.at(-1)!.call.seed, []);
+});
+
+test("late events from the dead connection are ignored", async () => {
+  const m = flakyModel();
+  const messages: RealtimeMessage[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: instant,
+    onMessage: (msg) => messages.push(msg),
+  });
+  await s.start();
+  const dead = m.connections[0]!;
+  m.drop();
+  await settle();
+
+  dead.emit({ type: "transcript.final", role: "user", text: "ghost", utterance: "g1" });
+  dead.emit({ type: "transport", status: "disconnected" });
+  await settle();
+  assert.deepEqual(messages, []);
+  assert.equal(m.connects, 2);
+  assert.equal(s.status, "listening");
+});
+
+test("reconnect attempts back off, and running out of them ends in error", async () => {
+  const m = flakyModel(["fail", "fail", "fail"]);
+  const states: VoiceStatus[] = [];
+  const errors: string[] = [];
+  const delays: number[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: {
+      maxAttempts: 3,
+      delayMs: (attempt) => {
+        delays.push(attempt);
+        return 0;
+      },
+    },
+    onStatus: (st) => states.push(st),
+    onError: (e) => errors.push(e),
+  });
+  await s.start();
+  states.length = 0;
+  m.drop();
+  await settle();
+
+  assert.equal(m.connects, 4, "the first connect plus three attempts");
+  assert.deepEqual(delays, [1, 2, 3]);
+  assert.deepEqual(states, ["connecting", "error"]);
+  assert.equal(s.status, "error");
+  assert.ok(errors.some((e) => /reconnect/i.test(e)));
+});
+
+test("a connection that drops before carrying anything does not refill the attempts", async () => {
+  // Otherwise an upstream that accepts and immediately hangs up would be
+  // reconnected to forever.
+  const m = flakyModel();
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: { maxAttempts: 2, delayMs: () => 0 },
+  });
+  await s.start();
+  m.emit({ type: "response.start" }); // the first wire did carry traffic
+  m.drop();
+  await settle();
+  m.drop();
+  await settle();
+  m.drop();
+  await settle();
+
+  assert.equal(m.connects, 3);
+  assert.equal(s.status, "error");
+});
+
+test("a connection that carries traffic earns back the full budget", async () => {
+  const m = flakyModel();
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: { maxAttempts: 1, delayMs: () => 0 },
+  });
+  await s.start();
+  for (let i = 0; i < 3; i++) {
+    m.emit({ type: "speech.interrupted", utterance: `u${i}` });
+    m.drop();
+    await settle();
+  }
+  assert.equal(m.connects, 4);
+  assert.equal(s.status, "listening");
+});
+
+test("stop during a reconnect ends it: no further attempts, a late connection is closed", async () => {
+  const m = flakyModel(["hang", "ok"]);
+  const states: VoiceStatus[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: instant,
+    onStatus: (st) => states.push(st),
+  });
+  await s.start();
+  m.drop();
+  await settle();
+  assert.equal(m.connects, 2);
+  assert.equal(s.status, "connecting");
+
+  const stopping = s.stop();
+  m.resolveLate();
+  await stopping;
+  await settle();
+
+  assert.equal(m.connects, 2, "no attempt after the stop");
+  assert.equal(m.lateClosed, true);
+  assert.equal(s.status, "idle");
+  assert.ok(!states.includes("error"));
+});
+
+test("stop while waiting out the backoff ends the reconnect", async () => {
+  const m = flakyModel();
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: { delayMs: () => 60_000 },
+  });
+  await s.start();
+  m.drop();
+  await tick();
+  assert.equal(s.status, "connecting");
+  await s.stop();
+  await settle();
+  assert.equal(m.connects, 1);
+  assert.equal(s.status, "idle");
+});
+
+test("the disconnect a host stop causes is not reconnected", async () => {
+  const m = flakyModel();
+  const s = createRealtimeSession({ model: m.model, ...makeCall(), reconnect: instant });
+  await s.start();
+  const conn = m.connections[0]!;
+  await s.stop();
+  conn.emit({ type: "transport", status: "disconnected" });
+  await settle();
+  assert.equal(m.connects, 1);
+  assert.equal(s.status, "idle");
+});
+
+test("reconnect: false keeps a drop fatal", async () => {
+  const m = flakyModel();
+  const s = createRealtimeSession({ model: m.model, ...makeCall(), reconnect: false });
+  await s.start();
+  m.drop();
+  await settle();
+  assert.equal(m.connects, 1);
+  assert.equal(s.status, "error");
+});
+
+test("a reconnected wire gets a fresh clock stamp", async () => {
+  const m = flakyModel();
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: instant,
+    turnMetadata: () => "<now/>",
+  });
+  await s.start();
+  m.drop();
+  await settle();
+  assert.deepEqual(m.connections[1]!.sent, [{ type: "text", role: "user", text: "<now/>" }]);
+  // Stamps are model-facing only, never part of the replayed conversation.
+  assert.deepEqual(m.connections[1]!.call.seed, []);
 });

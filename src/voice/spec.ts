@@ -13,7 +13,8 @@ export type Role = "user" | "assistant";
 
 /** The single user-facing status, derived by the core from the event stream:
  *  the conversation lifecycle with transport health folded in (a connecting
- *  wire reads as `connecting`, a dropped one as `error`). Providers never set
+ *  wire reads as `connecting`, and so does one being replaced after a drop;
+ *  a drop the core cannot recover from reads as `error`). Providers never set
  *  it — they only emit the raw events below. */
 export type VoiceStatus =
   | "idle"

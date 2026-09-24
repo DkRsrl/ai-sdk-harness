@@ -202,12 +202,54 @@ export type CreateRealtimeSessionArgs<TOOLS extends ToolSet = ToolSet> = {
    * persisted, never rendered. Omit for no stamps.
    */
   turnMetadata?: () => string;
+  /**
+   * What to do when the provider's wire drops under a live session (not after
+   * `stop`). By default the session reconnects: it opens a new provider
+   * connection seeded with the conversation so far and stays alive, moving
+   * through `connecting` instead of `error`. Tool calls in flight on the dead
+   * wire are cancelled, and an answer that was cut off is asked for again.
+   * `maxAttempts` (default 3) bounds the consecutive attempts — a connection
+   * that carries traffic earns the budget back — and `delayMs(attempt)`
+   * (default 250ms doubling, capped at 2s) spaces them. When they run out the
+   * session goes to `error`, as it does at once with `false`.
+   */
+  reconnect?: false | RealtimeReconnectOptions;
   /** Id minter for turns/messages. Defaults to `crypto.randomUUID`. */
   generateId?: () => string;
   /** Clock for the per-turn `createdAt` ordering stamp. Defaults to `Date.now`;
    *  inject for deterministic tests. */
   now?: () => number;
 } & RealtimeSessionCallbacks<TOOLS>;
+
+export interface RealtimeReconnectOptions {
+  /** Consecutive attempts before the session gives up and goes to `error`.
+   *  Default 3. */
+  maxAttempts?: number;
+  /** The wait before attempt `attempt` (1-based), in ms. Default 250ms
+   *  doubling per attempt, capped at 2s. */
+  delayMs?: (attempt: number) => number;
+}
+
+const DEFAULT_RECONNECT_ATTEMPTS = 3;
+const defaultReconnectDelay = (attempt: number) => Math.min(250 * 2 ** (attempt - 1), 2_000);
+
+// Appended to a reply the dropped wire cut off, in the seed of the connection
+// that replaces it: the model has to know what the user heard, and that it is
+// not the whole answer. Model-facing only; the recorded message keeps the words.
+const CUT_OFF_NOTE = "[cut off: the connection dropped before this reply finished]";
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 export interface RealtimeServeHandle {
   /** Feed one inbound wire frame from the client: binary ⇒ mic PCM, string ⇒
@@ -299,6 +341,7 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
       for (const k of sinks) k.onStatus?.(s);
     },
     onMessage: (m: RealtimeMessage<TOOLS>) => {
+      remember(m);
       for (const k of sinks) k.onMessage?.(m);
     },
     onToolPending: (p: {
@@ -343,6 +386,30 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
   let abort: AbortController | null = null;
   let startPromise: Promise<void> | null = null;
   let generation = 0;
+  // Bumped for every provider connection (and by `stop`), so events from a
+  // wire that has been replaced or torn down are dropped.
+  let connection = 0;
+  // What every connection of this run is opened with, bar the seed.
+  let baseCall: Omit<RealtimeCall, "seed" | "triggerResponse"> | null = null;
+
+  const reconnectMax =
+    args.reconnect === false ? 0 : (args.reconnect?.maxAttempts ?? DEFAULT_RECONNECT_ATTEMPTS);
+  const reconnectDelay =
+    (args.reconnect === false ? undefined : args.reconnect?.delayMs) ?? defaultReconnectDelay;
+  // Reconnect attempts spent since a connection last carried traffic. Kept
+  // across drops, so an upstream that accepts and hangs up at once is not
+  // redialled forever.
+  let reconnectsSpent = 0;
+  // A reconnect is under way: the disconnects of its own failed attempts are
+  // its business, not a new drop.
+  let reconnectingNow = false;
+  let reconnecting: Promise<void> | null = null;
+  // The conversation this run has put on the record, by message id in first-
+  // settled order — a revision replaces its entry in place. A reconnect seeds
+  // the new wire with `args.seed` followed by this.
+  const record = new Map<string, RealtimeOutbound[]>();
+  // Assistant replies a dropped wire cut off (see `CUT_OFF_NOTE`).
+  const cutOff = new Set<string>();
 
   const pendingTools = new Set<AbortController>();
   // The in-flight `runTool` promises, so teardown can wait for a tool that
@@ -500,6 +567,142 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
     };
     assistantTtftMs = null;
     return { timings };
+  }
+
+  function remember(m: RealtimeMessage<TOOLS>) {
+    record.set(
+      m.id,
+      m.type === "text"
+        ? [{ type: "text", role: m.role, text: m.text }]
+        : [
+            { type: "tool.call", callId: m.callId, name: m.name, input: m.input },
+            { type: "tool.result", callId: m.callId, output: m.output },
+          ],
+    );
+  }
+
+  function conversationSoFar(): RealtimeOutbound[] {
+    const seed = [...args.seed];
+    for (const [id, items] of record) {
+      for (const item of items) {
+        seed.push(
+          item.type === "text" && cutOff.has(id)
+            ? { ...item, text: `${item.text} ${CUT_OFF_NOTE}` }
+            : item,
+        );
+      }
+    }
+    return seed;
+  }
+
+  /** Open one provider connection whose events count only while it is the
+   *  current one. Null when it was superseded or stopped while connecting —
+   *  the late handle is closed. */
+  async function openConnection(
+    call: RealtimeCall,
+    controller: AbortController,
+  ): Promise<RealtimeHandle | null> {
+    const current = ++connection;
+    const live = () => connection === current;
+    const connected = await args.model.connect({
+      call,
+      emit: (event) => {
+        if (live()) onEvent(event);
+      },
+      onAudio: (pcm) => {
+        if (live()) cb.onAudio?.(pcm);
+      },
+      onChunk: (raw) => {
+        if (live()) cb.onChunk?.({ provider: args.model.provider, raw });
+      },
+      signal: controller.signal,
+    });
+    if (!live() || controller.signal.aborted) {
+      await connected.close();
+      return null;
+    }
+    return connected;
+  }
+
+  /** Whether an unexpected disconnect should be retried: the session is live
+   *  (started, not stopped) and has attempts left to spend. */
+  function canReconnect(): boolean {
+    return (
+      handle !== null &&
+      baseCall !== null &&
+      abort !== null &&
+      !abort.signal.aborted &&
+      reconnectsSpent < reconnectMax
+    );
+  }
+
+  /** The wire dropped under a live session: replace it with a new connection
+   *  seeded with the conversation so far, keeping this session object alive. */
+  function reconnect() {
+    const controller = abort!;
+    const call = baseCall!;
+    const lost = handle;
+    handle = null;
+    // Nothing more from the dead wire counts, whatever it still sends.
+    connection += 1;
+    void lost?.close().catch(() => {});
+    // Whether the user is owed an answer the dead wire never finished: one
+    // being produced, or a user turn nothing has reacted to yet.
+    const owed =
+      status === "composing" ||
+      status === "thinking" ||
+      status === "speaking" ||
+      pendingTools.size > 0 ||
+      (responseStartedAt !== null && !assistantReacted);
+    // Their callIds belong to the dead wire; the new one has never heard of
+    // them. A tool that finishes anyway is recorded, and handed to no one.
+    abortPendingTools();
+    // The words the user heard stay on the record, as on `stop`; the new wire
+    // is told they are not the whole answer.
+    const partial = turnIds.assistant;
+    flush("assistant");
+    if (partial && record.has(partial)) cutOff.add(partial);
+    // A user utterance the dead ASR never settled is gone with it.
+    buffers.user = "";
+    turnIds.user = null;
+    turnCreatedAt.user = null;
+    turnUtterance.user = null;
+    toolCallsThisResponse = 0;
+    turnEndsWithSpeech = false;
+    setStatus("connecting");
+
+    reconnectingNow = true;
+    const run = (async () => {
+      try {
+        while (reconnectsSpent < reconnectMax) {
+          reconnectsSpent += 1;
+          await sleep(reconnectDelay(reconnectsSpent), controller.signal);
+          if (controller.signal.aborted) return;
+          try {
+            const next = await openConnection(
+              { ...call, seed: conversationSoFar(), triggerResponse: owed },
+              controller,
+            );
+            if (!next) return;
+            handle = next;
+            stampClock();
+            if (status === "connecting") setStatus("listening");
+            return;
+          } catch {
+            if (controller.signal.aborted) return;
+          }
+        }
+        if (controller.signal.aborted) return;
+        setStatus("error");
+        cb.onError?.(`reconnect failed after ${reconnectMax} attempts`);
+      } finally {
+        reconnectingNow = false;
+      }
+    })();
+    reconnecting = run;
+    void run.finally(() => {
+      if (reconnecting === run) reconnecting = null;
+    });
   }
 
   function setStatus(next: VoiceStatus) {
@@ -703,8 +906,12 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
 
   // The whole state machine lives here: VoiceStatus is derived from the
   // normalized event stream, never set by a provider. Transport health folds
-  // in — a connected wire advances to `listening`, a dropped one to `error`.
+  // in — a connected wire advances to `listening`; a dropped one is replaced
+  // (`connecting`), or ends in `error` once it can't be.
   function onEvent(ev: RealtimeEvent) {
+    // A wire carrying the conversation has proven itself: whatever reconnect
+    // budget the drops before it spent is earned back.
+    if (ev.type !== "transport" && ev.type !== "error") reconnectsSpent = 0;
     switch (ev.type) {
       case "transport":
         if (ev.status === "connected" && status === "connecting") setStatus("listening");
@@ -713,7 +920,9 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
           // tool waiting on one would wait for a transcript that has no way of
           // arriving.
           abandonUtterances();
-          if (status !== "idle") setStatus("error");
+          if (status === "idle" || reconnectingNow) return;
+          if (canReconnect()) reconnect();
+          else setStatus("error");
         }
         return;
       case "response.start":
@@ -907,12 +1116,13 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
       setStatus("connecting");
       const controller = new AbortController();
       abort = controller;
+      record.clear();
+      cutOff.clear();
+      reconnectsSpent = 0;
       const starting = (async () => {
         try {
-          const fullCall: RealtimeCall = {
+          const call = {
             instructions: args.instructions,
-            seed: args.seed,
-            triggerResponse: args.triggerResponse,
             audio: args.audio,
             tools: tools ? await toRealtimeToolDefs(tools) : [],
           };
@@ -922,28 +1132,13 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
           ) {
             return;
           }
-          const connected = await args.model.connect({
-            call: fullCall,
-            emit: (event) => {
-              if (generation === currentGeneration) onEvent(event);
-            },
-            onAudio: (pcm) => {
-              if (generation === currentGeneration) cb.onAudio?.(pcm);
-            },
-            onChunk: (raw) => {
-              if (generation === currentGeneration) {
-                cb.onChunk?.({ provider: args.model.provider, raw });
-              }
-            },
-            signal: controller.signal,
-          });
-          if (
-            generation !== currentGeneration ||
-            controller.signal.aborted
-          ) {
-            await connected.close();
-            return;
-          }
+          baseCall = call;
+          const connected = await openConnection(
+            { ...call, seed: args.seed, triggerResponse: args.triggerResponse },
+            controller,
+          );
+          // Null when a stop landed while connecting; the late handle is closed.
+          if (!connected) return;
           handle = connected;
           stampClock();
           // A provider that emits `transport: connected` will already have moved
@@ -1020,13 +1215,16 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
 
     async stop() {
       generation += 1;
+      connection += 1;
       abortPendingTools();
       abort?.abort();
       abort = null;
       const starting = startPromise;
+      const retrying = reconnecting;
       const live = handle;
       handle = null;
       if (starting) await Promise.allSettled([starting]);
+      if (retrying) await Promise.allSettled([retrying]);
       // A tool that ignored the abort may still be mid-action; wait for it,
       // so what it did reaches the record before whoever loads the transcript
       // next — a successor session starts on exactly this edge.

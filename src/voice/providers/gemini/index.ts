@@ -20,6 +20,7 @@ import type {
   RealtimeOutbound,
   RealtimeToolDef,
 } from "../../spec";
+import { describeClose } from "../ws";
 import type {
   GeminiConnect,
   GeminiLiveCallbacks,
@@ -287,6 +288,8 @@ export function gemini(modelId: GeminiVoiceModel, options: GeminiModelOptions = 
         }
       }
 
+      // Closed by us (the core's abort, or `close()` on the handle).
+      let closing = false;
       emit({ type: "transport", status: "connecting" });
       const session = await liveConnect({
         model: modelId,
@@ -294,9 +297,13 @@ export function gemini(modelId: GeminiVoiceModel, options: GeminiModelOptions = 
         callbacks: {
           onopen: () => emit({ type: "transport", status: "connected" }),
           onclose: (e) => {
-            // Gemini reports rejections (bad config/message) as a close reason —
-            // surface it before the disconnect so failures aren't silent.
-            if (e?.reason) emit({ type: "error", message: `Gemini closed: ${e.reason}`, fatal: false });
+            // A close we did not ask for carries its cause: Gemini reports
+            // rejections (bad config/message) as a close reason, and an upstream
+            // drop as its code. Surface it before the disconnect so a failure is
+            // never silent.
+            if (!closing && !signal.aborted) {
+              emit({ type: "error", message: describeClose("Gemini", e), fatal: false });
+            }
             emit({ type: "transport", status: "disconnected" });
           },
           onerror: (e) =>
@@ -358,6 +365,7 @@ export function gemini(modelId: GeminiVoiceModel, options: GeminiModelOptions = 
           else pendingTrigger = true;
         },
         async close() {
+          closing = true;
           try {
             session.close();
           } catch {

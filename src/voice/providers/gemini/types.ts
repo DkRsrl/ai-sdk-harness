@@ -46,7 +46,7 @@ export interface GeminiLiveCallbacks {
   onopen?: () => void;
   onmessage?: (message: GeminiServerMessage) => void;
   onerror?: (e: { message?: string }) => void;
-  onclose?: (e?: { reason?: string }) => void;
+  onclose?: (e?: { code?: number; reason?: string }) => void;
 }
 
 export type GeminiConnect = (args: {

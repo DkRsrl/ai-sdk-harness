@@ -15,6 +15,7 @@ import type {
   RealtimeToolDef,
 } from "../../spec";
 import { normalizeKeyterms } from "../../keyterms";
+import { describeClose } from "../ws";
 import type {
   GrokAudioFormat,
   GrokModelOptions,
@@ -381,7 +382,16 @@ export function grok(modelId: GrokVoiceModel, options: GrokModelOptions = {}): R
       ws.addEventListener("error", () =>
         emit({ type: "error", message: "xAI Grok connection failed", fatal: false }),
       );
-      ws.addEventListener("close", () => emit({ type: "transport", status: "disconnected" }));
+      // Closed by us (the core's abort, or `close()` on the handle) is the
+      // expected end; anything else dropped under a live session, and the host
+      // needs its cause.
+      let closing = false;
+      ws.addEventListener("close", (ev) => {
+        if (!closing && !signal.aborted) {
+          emit({ type: "error", message: describeClose("xAI Grok", ev), fatal: false });
+        }
+        emit({ type: "transport", status: "disconnected" });
+      });
       signal.addEventListener("abort", () => {
         try {
           ws.close();
@@ -442,6 +452,7 @@ export function grok(modelId: GrokVoiceModel, options: GrokModelOptions = {}): R
           sendRaw({ type: "response.create" });
         },
         async close() {
+          closing = true;
           try {
             ws.close();
           } catch {
