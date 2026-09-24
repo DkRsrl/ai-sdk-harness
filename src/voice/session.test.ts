@@ -2105,8 +2105,11 @@ function flakyModel(outcomes: Array<"ok" | "fail" | "hang"> = []) {
     emit: (e: RealtimeEvent) => connections.at(-1)?.emit(e),
     /** The upstream drop seen in the field: 1011 with no abort. */
     drop(conn = connections.at(-1)) {
-      conn?.emit({ type: "error", message: "flaky closed: code=1011 reason=Upstream connection closed", fatal: false });
-      conn?.emit({ type: "transport", status: "disconnected" });
+      conn?.emit({
+        type: "transport",
+        status: "disconnected",
+        cause: "flaky closed: code=1011 reason=Upstream connection closed",
+      });
     },
   };
 }
@@ -2118,6 +2121,7 @@ test("an upstream drop mid-reply reconnects with the conversation so far, never 
   const states: VoiceStatus[] = [];
   const messages: RealtimeMessage[] = [];
   const errors: string[] = [];
+  const diagnostics: string[] = [];
   const s = createRealtimeSession({
     model: m.model,
     ...makeCall(),
@@ -2126,6 +2130,7 @@ test("an upstream drop mid-reply reconnects with the conversation so far, never 
     onStatus: (st) => states.push(st),
     onMessage: (msg) => messages.push(msg),
     onError: (e) => errors.push(e),
+    onDiagnostic: (w) => diagnostics.push(w),
   });
   await s.start();
 
@@ -2141,7 +2146,8 @@ test("an upstream drop mid-reply reconnects with the conversation so far, never 
   assert.ok(!states.includes("error"), `never error: ${states.join(" → ")}`);
   assert.equal(states[0], "connecting");
   assert.equal(s.status, "listening");
-  assert.ok(errors.some((e) => /code=1011/.test(e)), "the cause still reaches the host");
+  assert.deepEqual(errors, [], "a drop the session recovers from is not an error");
+  assert.ok(diagnostics.some((w) => /code=1011/.test(w)), "the cause still reaches the host's logs");
 
   // The words the user heard are on the record, once.
   const cut = messages.filter((msg) => msg.type === "text" && msg.role === "assistant");
@@ -2272,7 +2278,9 @@ test("reconnect attempts back off, and running out of them ends in error", async
   const m = flakyModel(["fail", "fail", "fail"]);
   const states: VoiceStatus[] = [];
   const errors: string[] = [];
+  const diagnostics: string[] = [];
   const delays: number[] = [];
+  const order: string[] = [];
   const s = createRealtimeSession({
     model: m.model,
     ...makeCall(),
@@ -2283,8 +2291,15 @@ test("reconnect attempts back off, and running out of them ends in error", async
         return 0;
       },
     },
-    onStatus: (st) => states.push(st),
-    onError: (e) => errors.push(e),
+    onStatus: (st) => {
+      states.push(st);
+      order.push(`status:${st}`);
+    },
+    onError: (e) => {
+      errors.push(e);
+      order.push("error");
+    },
+    onDiagnostic: (w) => diagnostics.push(w),
   });
   await s.start();
   states.length = 0;
@@ -2295,7 +2310,14 @@ test("reconnect attempts back off, and running out of them ends in error", async
   assert.deepEqual(delays, [1, 2, 3]);
   assert.deepEqual(states, ["connecting", "error"]);
   assert.equal(s.status, "error");
-  assert.ok(errors.some((e) => /reconnect/i.test(e)));
+  // Only the outcome is an error, once, and it names the cause.
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /reconnect failed after 3 attempts/);
+  assert.match(errors[0]!, /code=1011/);
+  // The reason is out before the status that makes a relay close the socket.
+  assert.deepEqual(order.slice(-2), ["error", "status:error"]);
+  // Each failed attempt is for the logs.
+  assert.equal(diagnostics.filter((w) => /upstream refused/.test(w)).length, 3);
 });
 
 test("a connection that drops before carrying anything does not refill the attempts", async () => {
@@ -2392,14 +2414,75 @@ test("the disconnect a host stop causes is not reconnected", async () => {
   assert.equal(s.status, "idle");
 });
 
-test("reconnect: false keeps a drop fatal", async () => {
+test("reconnect: false keeps a drop fatal, and its cause is the error", async () => {
   const m = flakyModel();
-  const s = createRealtimeSession({ model: m.model, ...makeCall(), reconnect: false });
+  const errors: string[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: false,
+    onError: (e) => errors.push(e),
+  });
   await s.start();
   m.drop();
   await settle();
   assert.equal(m.connects, 1);
   assert.equal(s.status, "error");
+  assert.deepEqual(errors, ["flaky closed: code=1011 reason=Upstream connection closed"]);
+});
+
+test("serve() sends no error frame while the session recovers", async () => {
+  // A client that renders `error` frames — or treats them as fatal and hangs
+  // up, ending the very retry that would have saved the call — must not see
+  // a drop the session is handling itself.
+  const m = flakyModel(["fail", "ok"]);
+  const frames: string[] = [];
+  const diagnostics: string[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: instant,
+    onDiagnostic: (w) => diagnostics.push(w),
+  });
+  s.serve((f) => {
+    if (typeof f === "string") frames.push(f);
+  });
+  await s.start();
+  m.emit({ type: "speech.interrupted", utterance: "u1" });
+  m.drop();
+  await settle();
+
+  assert.equal(s.status, "listening");
+  const events = frames.map((f) => decodeServerEvent(f));
+  assert.ok(!events.some((e) => e.t === "error"), JSON.stringify(events));
+  assert.deepEqual(
+    events.filter((e) => e.t === "status").map((e) => e.t === "status" && e.status),
+    ["connecting", "listening", "connecting", "listening"],
+  );
+  assert.ok(diagnostics.some((w) => /code=1011/.test(w)));
+  assert.ok(diagnostics.some((w) => /upstream refused/.test(w)));
+  assert.ok(diagnostics.some((w) => /reconnected/.test(w)));
+});
+
+test("serve() forwards the error when the session cannot recover", async () => {
+  const m = flakyModel(["fail"]);
+  const frames: string[] = [];
+  const s = createRealtimeSession({
+    model: m.model,
+    ...makeCall(),
+    reconnect: { maxAttempts: 1, delayMs: () => 0 },
+  });
+  s.serve((f) => {
+    if (typeof f === "string") frames.push(f);
+  });
+  await s.start();
+  m.emit({ type: "speech.interrupted", utterance: "u1" });
+  m.drop();
+  await settle();
+
+  const errors = frames.map((f) => decodeServerEvent(f)).filter((e) => e.t === "error");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!.t === "error" ? errors[0]!.message : "", /reconnect failed after 1 attempt/);
 });
 
 test("a reconnected wire gets a fresh clock stamp", async () => {

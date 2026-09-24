@@ -81,7 +81,10 @@ export interface RealtimeCall {
  *  The core derives VoiceStatus, assembles transcripts, and dispatches tools
  *  from these. */
 export type RealtimeEvent =
-  | { type: "transport"; status: TransportStatus }
+  // `cause` rides on a `disconnected` the provider did not ask for: why the
+  // wire closed (e.g. "AI Gateway closed: code=1011 reason=…"). A fact, not an
+  // error — whether the drop is one is the core's call, since it may recover.
+  | { type: "transport"; status: TransportStatus; cause?: string }
   | { type: "speech.start" }
   | { type: "speech.stop" }
   // Barge-in: the assistant's turn was cut off. Providers emit this whenever

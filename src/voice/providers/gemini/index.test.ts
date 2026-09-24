@@ -55,6 +55,7 @@ function fakeLive() {
       callbacks.onclose?.(
         reason || code ? { ...(reason ? { reason } : {}), ...(code ? { code } : {}) } : undefined,
       ),
+    error: (message: string) => callbacks.onerror?.({ message }),
     fire: (m: GeminiServerMessage) => callbacks.onmessage?.(m),
   };
 }
@@ -206,7 +207,8 @@ test("a triggered response waits for setupComplete", async () => {
   assert.deepEqual(fake.clientContent[0], { turnComplete: true }); // no empty turns[]
 });
 
-test("surfaces a close reason as an error before disconnect", async () => {
+test("a close reason rides on the disconnect", async () => {
+  // Gemini reports rejections (bad config/message) as a close reason.
   const fake = fakeLive();
   const events: RealtimeEvent[] = [];
   await gemini("m", { apiKey: "k", connect: fake.connect }).connect({
@@ -216,12 +218,12 @@ test("surfaces a close reason as an error before disconnect", async () => {
     signal: new AbortController().signal,
   });
   fake.close("Request contains an invalid argument.");
-  assert.ok(
-    events.some(
-      (e) => e.type === "error" && /invalid argument/.test(e.message),
-    ),
-  );
-  assert.ok(events.some((e) => e.type === "transport" && e.status === "disconnected"));
+  assert.deepEqual(events.at(-1), {
+    type: "transport",
+    status: "disconnected",
+    cause: "Gemini closed: reason=Request contains an invalid argument.",
+  });
+  assert.ok(!events.some((e) => e.type === "error"));
 });
 
 test("renderSeedTranscript renders text + tool round-trips, null when empty", () => {
@@ -293,7 +295,7 @@ test("buffers text items until setupComplete, then flushes them in order", async
   assert.equal(fake.clientContent.length, 2);
 });
 
-test("an unexpected close reports its code and reason before the disconnect", async () => {
+test("an unexpected close carries its code and reason on the disconnect", async () => {
   const fake = fakeLive();
   const events: RealtimeEvent[] = [];
   await gemini("m", { apiKey: "k", connect: fake.connect }).connect({
@@ -307,12 +309,36 @@ test("an unexpected close reports its code and reason before the disconnect", as
   fake.close("Upstream connection closed", 1011);
 
   assert.deepEqual(events, [
-    { type: "error", message: "Gemini closed: code=1011 reason=Upstream connection closed", fatal: false },
-    { type: "transport", status: "disconnected" },
+    {
+      type: "transport",
+      status: "disconnected",
+      cause: "Gemini closed: code=1011 reason=Upstream connection closed",
+    },
   ]);
 });
 
-test("a close the host asked for stays silent", async () => {
+test("a socket error is folded into the close that follows it", async () => {
+  // The close always follows; the error's message is the cause when the
+  // close itself says nothing.
+  const fake = fakeLive();
+  const events: RealtimeEvent[] = [];
+  await gemini("m", { apiKey: "k", connect: fake.connect }).connect({
+    call: makeCall(),
+    emit: (e) => events.push(e),
+    onAudio: () => {},
+    signal: new AbortController().signal,
+  });
+  events.length = 0;
+
+  fake.error("socket hang up");
+  fake.close();
+
+  assert.deepEqual(events, [
+    { type: "transport", status: "disconnected", cause: "Gemini closed: socket hang up" },
+  ]);
+});
+
+test("a close the host asked for carries no cause", async () => {
   const fake = fakeLive();
   const events: RealtimeEvent[] = [];
   const controller = new AbortController();

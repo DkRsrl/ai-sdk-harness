@@ -135,8 +135,15 @@ export interface RealtimeSessionCallbacks<TOOLS extends ToolSet = ToolSet> {
    *  only when inspecting/recording wire traffic. */
   onChunk?: (chunk: RealtimeChunk) => void;
   /** An error surfaced by the provider or a tool. Fatal provider errors also
-   *  flip the state to `"error"`. */
+   *  flip the state to `"error"`. `serve()` forwards it to the client, so it is
+   *  reserved for what the user has to know about — a wire the session could
+   *  not get back, for one. */
   onError?: (message: string) => void;
+  /** A condition the session is recovering from on its own, for the host's
+   *  logs: why a wire dropped, each reconnect attempt that failed, the
+   *  reconnect that succeeded. Never forwarded by `serve()` — a client that
+   *  rendered it, or hung up on it, would break the very recovery it reports. */
+  onDiagnostic?: (message: string) => void;
 }
 
 /**
@@ -378,6 +385,9 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
     },
     onError: (e: string) => {
       for (const k of sinks) k.onError?.(e);
+    },
+    onDiagnostic: (d: string) => {
+      for (const k of sinks) k.onDiagnostic?.(d);
     },
   };
 
@@ -636,9 +646,17 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
     );
   }
 
+  /** The error that ends a session whose reconnects ran out. */
+  function reconnectFailure(cause: string | undefined): string {
+    const attempts = `${reconnectMax} attempt${reconnectMax === 1 ? "" : "s"}`;
+    return `reconnect failed after ${attempts}${cause ? `: ${cause}` : ""}`;
+  }
+
   /** The wire dropped under a live session: replace it with a new connection
-   *  seeded with the conversation so far, keeping this session object alive. */
-  function reconnect() {
+   *  seeded with the conversation so far, keeping this session object alive.
+   *  Everything on the way is a diagnostic; only giving up is an error. */
+  function reconnect(cause: string | undefined) {
+    cb.onDiagnostic?.(`${cause ?? "connection lost"}; reconnecting`);
     const controller = abort!;
     const call = baseCall!;
     const lost = handle;
@@ -678,6 +696,7 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
           reconnectsSpent += 1;
           await sleep(reconnectDelay(reconnectsSpent), controller.signal);
           if (controller.signal.aborted) return;
+          const attempt = `reconnect attempt ${reconnectsSpent} of ${reconnectMax}`;
           try {
             const next = await openConnection(
               { ...call, seed: conversationSoFar(), triggerResponse: owed },
@@ -685,16 +704,21 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
             );
             if (!next) return;
             handle = next;
+            cb.onDiagnostic?.(`${attempt} reconnected`);
             stampClock();
             if (status === "connecting") setStatus("listening");
             return;
-          } catch {
+          } catch (error) {
             if (controller.signal.aborted) return;
+            const message = error instanceof Error ? error.message : String(error);
+            cb.onDiagnostic?.(`${attempt} failed: ${message}`);
           }
         }
         if (controller.signal.aborted) return;
+        // The reason before the status: a relay closes the client socket on
+        // `error`, and the reason has to be on the wire by then.
+        cb.onError?.(reconnectFailure(cause));
         setStatus("error");
-        cb.onError?.(`reconnect failed after ${reconnectMax} attempts`);
       } finally {
         reconnectingNow = false;
       }
@@ -920,9 +944,23 @@ export function createRealtimeSession<TOOLS extends ToolSet = ToolSet>(
           // tool waiting on one would wait for a transcript that has no way of
           // arriving.
           abandonUtterances();
-          if (status === "idle" || reconnectingNow) return;
-          if (canReconnect()) reconnect();
-          else setStatus("error");
+          if (status === "idle") return;
+          if (reconnectingNow) {
+            // One of the reconnect's own attempts; the reconnect reports it.
+            if (ev.cause) cb.onDiagnostic?.(ev.cause);
+            return;
+          }
+          if (canReconnect()) {
+            reconnect(ev.cause);
+            return;
+          }
+          // Terminal: the user has to hear why. Reconnects that ran out say so;
+          // with reconnect off, or a wire lost before the session was live, the
+          // cause is the whole story.
+          const exhausted = handle !== null && reconnectMax > 0 && reconnectsSpent >= reconnectMax;
+          const message = exhausted ? reconnectFailure(ev.cause) : ev.cause;
+          if (message) cb.onError?.(message);
+          setStatus("error");
         }
         return;
       case "response.start":

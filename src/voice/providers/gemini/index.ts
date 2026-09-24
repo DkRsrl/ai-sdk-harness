@@ -290,6 +290,7 @@ export function gemini(modelId: GeminiVoiceModel, options: GeminiModelOptions = 
 
       // Closed by us (the core's abort, or `close()` on the handle).
       let closing = false;
+      let socketError: string | undefined;
       emit({ type: "transport", status: "connecting" });
       const session = await liveConnect({
         model: modelId,
@@ -299,15 +300,18 @@ export function gemini(modelId: GeminiVoiceModel, options: GeminiModelOptions = 
           onclose: (e) => {
             // A close we did not ask for carries its cause: Gemini reports
             // rejections (bad config/message) as a close reason, and an upstream
-            // drop as its code. Surface it before the disconnect so a failure is
-            // never silent.
-            if (!closing && !signal.aborted) {
-              emit({ type: "error", message: describeClose("Gemini", e), fatal: false });
-            }
-            emit({ type: "transport", status: "disconnected" });
+            // drop as its code.
+            const unexpected = !closing && !signal.aborted;
+            emit({
+              type: "transport",
+              status: "disconnected",
+              ...(unexpected ? { cause: describeClose("Gemini", e, socketError) } : {}),
+            });
           },
-          onerror: (e) =>
-            emit({ type: "error", message: e?.message ?? "Gemini connection error", fatal: false }),
+          // Always followed by the close, which reports it.
+          onerror: (e) => {
+            socketError = e?.message;
+          },
           onmessage: (m) => handleMessage(m),
         },
       });

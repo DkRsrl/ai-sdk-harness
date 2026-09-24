@@ -18,13 +18,19 @@ export interface WSCloseInfo {
   reason?: string;
 }
 
-/** The message for a socket the host did not close: its code and reason, so
- *  an upstream drop (e.g. a gateway's 1011 "Upstream connection closed")
- *  reaches the host with its cause instead of as a bare disconnect. */
-export function describeClose(label: string, ev: WSCloseInfo | undefined): string {
+/** The cause of a socket the host did not close: its code and reason, so an
+ *  upstream drop (e.g. a gateway's 1011 "Upstream connection closed") reaches
+ *  the host explained instead of as a bare disconnect. `fallback` stands in
+ *  when the close says nothing (an earlier socket error's message). */
+export function describeClose(
+  label: string,
+  ev: WSCloseInfo | undefined,
+  fallback?: string,
+): string {
   const parts = [
     ...(ev?.code !== undefined ? [`code=${ev.code}`] : []),
     ...(ev?.reason ? [`reason=${ev.reason}`] : []),
   ];
-  return parts.length > 0 ? `${label} closed: ${parts.join(" ")}` : `${label} closed unexpectedly`;
+  if (parts.length > 0) return `${label} closed: ${parts.join(" ")}`;
+  return fallback ? `${label} closed: ${fallback}` : `${label} closed unexpectedly`;
 }

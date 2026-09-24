@@ -379,18 +379,18 @@ export function grok(modelId: GrokVoiceModel, options: GrokModelOptions = {}): R
         onChunk?.(event); // raw frame, incl. response.done.usage the mapping drops
         handleEvent(event);
       });
-      ws.addEventListener("error", () =>
-        emit({ type: "error", message: "xAI Grok connection failed", fatal: false }),
-      );
       // Closed by us (the core's abort, or `close()` on the handle) is the
       // expected end; anything else dropped under a live session, and the host
-      // needs its cause.
+      // needs its cause. A socket `error` says nothing of its own and is always
+      // followed by this close, so the close is where a failure is reported.
       let closing = false;
       ws.addEventListener("close", (ev) => {
-        if (!closing && !signal.aborted) {
-          emit({ type: "error", message: describeClose("xAI Grok", ev), fatal: false });
-        }
-        emit({ type: "transport", status: "disconnected" });
+        const unexpected = !closing && !signal.aborted;
+        emit({
+          type: "transport",
+          status: "disconnected",
+          ...(unexpected ? { cause: describeClose("xAI Grok", ev) } : {}),
+        });
       });
       signal.addEventListener("abort", () => {
         try {

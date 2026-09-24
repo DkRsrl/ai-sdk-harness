@@ -681,9 +681,10 @@ test("a transcription that fails still ends the utterance", async () => {
   });
 });
 
-test("an unexpected close reports its code and reason before the disconnect", async () => {
+test("an unexpected close carries its code and reason on the disconnect", async () => {
   // An upstream drop (the gateway relays xAI's as 1011) must reach the host
-  // with its cause, not as a bare disconnect.
+  // with its cause, not as a bare disconnect — and as a fact on the
+  // disconnect, not an error: whether it is one is the core's call.
   const fake = new FakeWS();
   const events: RealtimeEvent[] = [];
   await fakeModel(fake).connect({
@@ -695,20 +696,19 @@ test("an unexpected close reports its code and reason before the disconnect", as
   events.length = 0;
 
   fake.readyState = 3;
+  fake.fire("error");
   fake.fire("close", { code: 1011, reason: "Upstream connection closed", wasClean: true });
 
-  assert.equal(events.length, 2);
-  const [error, disconnect] = events;
-  assert.equal(error?.type, "error");
-  assert.ok(error?.type === "error" && !error.fatal);
-  assert.match(
-    error?.type === "error" ? error.message : "",
-    /closed: code=1011 reason=Upstream connection closed$/,
-  );
-  assert.deepEqual(disconnect, { type: "transport", status: "disconnected" });
+  assert.deepEqual(events, [
+    {
+      type: "transport",
+      status: "disconnected",
+      cause: "xAI Grok closed: code=1011 reason=Upstream connection closed",
+    },
+  ]);
 });
 
-test("a close the host asked for stays silent", async () => {
+test("a close the host asked for carries no cause", async () => {
   for (const how of ["abort", "handle"] as const) {
     const fake = new FakeWS();
     const events: RealtimeEvent[] = [];
