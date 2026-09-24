@@ -2201,3 +2201,299 @@ test("an override still applies inside a narrowing", async () => {
   await drain(await session.prompt("go"));
   assert.deepEqual(seen.filed, { fs: "/sandbox" });
 });
+
+// ── Active skills in the catalog ────────────────────────────────────────────
+
+/** The system prompt a model call carried. */
+function systemText(call: { prompt?: unknown }): string {
+  const prompt = (call.prompt ?? []) as Array<{ role: string; content: unknown }>;
+  return prompt
+    .filter((m) => m.role === "system")
+    .map((m) => String(m.content))
+    .join("\n");
+}
+
+/** Everything but the system prompt: what the conversation itself carries. */
+function conversationText(call: { prompt?: unknown }): string {
+  const prompt = (call.prompt ?? []) as Array<{ role: string }>;
+  return JSON.stringify(prompt.filter((m) => m.role !== "system"));
+}
+
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+const ACTIVE_RULE =
+  "- A skill marked loaded, or whose <skill-init> is already in the conversation, is active: follow it, never load it again.";
+
+const skilledRole = role({
+  name: "skilled",
+  systemPrompt: "You are a helper.",
+  tools: ["readFile", "loadSkill"],
+});
+
+const agendaSkill = skill({
+  name: "agenda",
+  description: "Calendar work.",
+  instructions: "Read the day before booking.",
+  tools: ["createArtifact"],
+});
+
+test("with no initial skills the prompt is exactly what it was", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({ stream: textStream("hi") }),
+  });
+  const harness = await init({
+    registry: loaderRegistry,
+    model,
+    role: skilledRole(),
+    loadableSkills: [agendaSource, filingSource],
+  });
+  assert.equal(
+    harness.instructions,
+    [
+      "You are a helper.",
+      "",
+      "Skills carry the instructions for specific domains. Two rules:",
+      "- The moment the conversation touches a covered domain, load its skill with loadSkill. A vague or incomplete request counts: how to respond is in the skill.",
+      "- loadSkill is your ONLY call in that step. Read what it returns, then decide.",
+      "<available_skills>",
+      "  <skill>",
+      "    <name>agenda</name>",
+      "    <description>Calendar work.</description>",
+      "  </skill>",
+      "  <skill>",
+      "    <name>filing</name>",
+      "    <description>Filing work.</description>",
+      "  </skill>",
+      "</available_skills>",
+    ].join("\n"),
+  );
+});
+
+test("the catalog marks exactly the initial skills as loaded and leaves the rest byte for byte", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({ stream: textStream("hi") }),
+  });
+  const harness = await init({
+    registry: loaderRegistry,
+    model,
+    role: skilledRole(),
+    initialSkills: [artifacts()],
+    loadableSkills: [staticSource(artifacts()), agendaSource, filingSource],
+  });
+  const text = harness.instructions;
+
+  assert.ok(
+    text.includes(
+      [
+        '  <skill loaded="true">',
+        "    <name>artifacts</name>",
+        "    <description>Create artifacts on request.</description>",
+        "  </skill>",
+      ].join("\n"),
+    ),
+  );
+  assert.equal(occurrences(text, 'loaded="true"'), 1);
+  for (const [name, description] of [
+    ["agenda", "Calendar work."],
+    ["filing", "Filing work."],
+  ]) {
+    assert.ok(
+      text.includes(
+        [
+          "  <skill>",
+          `    <name>${name}</name>`,
+          `    <description>${description}</description>`,
+          "  </skill>",
+        ].join("\n"),
+      ),
+    );
+  }
+  // Still the full inventory: an initial skill that is also loadable is
+  // listed once, marked, not dropped.
+  assert.equal(occurrences(text, "<name>artifacts</name>"), 1);
+  assert.equal(occurrences(text, "\n  <skill"), 3);
+});
+
+test("the active-skill rule joins the preamble only when the catalog renders", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({ stream: textStream("hi") }),
+  });
+  const withLoader = await init({
+    registry: loaderRegistry,
+    model,
+    role: skilledRole(),
+    initialSkills: [artifacts()],
+    loadableSkills: [staticSource(artifacts()), agendaSource],
+  });
+  assert.ok(withLoader.instructions.includes(ACTIVE_RULE));
+  assert.match(withLoader.instructions, /domains\. Three rules:/);
+
+  // Same skills, but the role never lists the loader: no catalog, no rule.
+  const withoutLoader = await init({
+    registry: loaderRegistry,
+    model,
+    role: helper(),
+    initialSkills: [artifacts()],
+    loadableSkills: [staticSource(artifacts()), agendaSource],
+  });
+  assert.doesNotMatch(withoutLoader.instructions, /<available_skills>/);
+  assert.ok(!withoutLoader.instructions.includes(ACTIVE_RULE));
+});
+
+test("a subsession marks its own initial skills, not the parent's", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({ stream: textStream("hi") }),
+  });
+  const harness = await init({
+    registry: loaderRegistry,
+    model,
+    role: skilledRole(),
+    initialSkills: [artifacts()],
+    loadableSkills: [staticSource(artifacts(), agendaSkill())],
+  });
+  const root = await harness.session();
+  const worker = await root.subsession({
+    role: skilledRole(),
+    initialSkills: [agendaSkill()],
+  });
+  await drain(await worker.prompt("hi"));
+
+  const text = systemText(model.doStreamCalls[0]!);
+  assert.ok(text.includes('  <skill loaded="true">\n    <name>agenda</name>'));
+  assert.ok(text.includes("  <skill>\n    <name>artifacts</name>"));
+  assert.equal(occurrences(text, 'loaded="true"'), 1);
+});
+
+/** A model that calls `loadSkill` once per name in `loads`, one step each,
+ *  then answers with text. */
+function loadingModel(...loads: string[]) {
+  let calls = 0;
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      const i = calls++;
+      const name = loads[i];
+      return {
+        stream:
+          name === undefined
+            ? textStream("ok")
+            : toolCallStream("loadSkill", { name }, `call-${i}`),
+      };
+    },
+  });
+}
+
+/** `agendaSource`, counting how often the loader actually reads it. */
+function countingAgendaSource() {
+  const reads: string[] = [];
+  const source: SkillSource = {
+    list: agendaSource.list,
+    read: async (name) => {
+      reads.push(name);
+      return agendaSource.read(name);
+    },
+  };
+  return { source, reads };
+}
+
+test("loading a preloaded skill answers already active, without a second skill-init", async () => {
+  const model = loadingModel("artifacts");
+  const session = await (
+    await init({
+      registry: loaderRegistry,
+      model,
+      role: skilledRole(),
+      initialSkills: [artifacts()],
+      loadableSkills: [staticSource(artifacts())],
+    })
+  ).session();
+  await drain(await session.prompt("make one"));
+
+  const conversation = conversationText(model.doStreamCalls[1]!);
+  assert.match(conversation, /already active/);
+  assert.doesNotMatch(conversation, /skill-init/);
+});
+
+test("loading a skill twice reads it once and answers already active the second time", async () => {
+  const model = loadingModel("agenda", "agenda");
+  const { source, reads } = countingAgendaSource();
+  const session = await (
+    await init({
+      registry: loaderRegistry,
+      model,
+      role: skilledRole(),
+      loadableSkills: [source],
+    })
+  ).session();
+  await drain(await session.prompt("tomorrow?"));
+
+  const conversation = conversationText(model.doStreamCalls[2]!);
+  assert.equal(occurrences(conversation, "Read the day before booking."), 1);
+  assert.match(conversation, /already active/);
+  assert.deepEqual(reads, ["agenda"]);
+  assert.ok(session.activeTools.includes("createArtifact"));
+});
+
+test("a skill loaded before a resume is still active after it", async () => {
+  const storage = new InMemorySessionStorage();
+  const first = await (
+    await init({
+      registry: loaderRegistry,
+      model: loadingModel("agenda"),
+      role: skilledRole(),
+      loadableSkills: [agendaSource],
+      storage,
+    })
+  ).session({ sessionId: "active1" });
+  const result = await first.prompt("tomorrow?");
+  await drain(result);
+  await result.committed;
+
+  const model = loadingModel("agenda");
+  const { source, reads } = countingAgendaSource();
+  const resumed = await (
+    await init({
+      registry: loaderRegistry,
+      model,
+      role: skilledRole(),
+      loadableSkills: [source],
+      storage,
+    })
+  ).session({ sessionId: "active1" });
+  await drain(await resumed.prompt("and the day after?"));
+
+  assert.deepEqual(reads, []);
+  const conversation = conversationText(model.doStreamCalls[1]!);
+  assert.equal(occurrences(conversation, "Read the day before booking."), 1);
+  assert.match(conversation, /already active/);
+});
+
+test("a skill the host injected is already active for the model, live and after a resume", async () => {
+  const storage = new InMemorySessionStorage();
+  const model = loadingModel("agenda");
+  const config = {
+    registry: loaderRegistry,
+    model,
+    role: skilledRole(),
+    loadableSkills: [agendaSource],
+    storage,
+  };
+  const session = await (await init(config)).session({ sessionId: "host1" });
+  await session.skill("agenda");
+  const result = await session.prompt("tomorrow?");
+  await drain(result);
+  await result.committed;
+  assert.match(conversationText(model.doStreamCalls[1]!), /already active/);
+
+  const again = loadingModel("agenda");
+  const resumed = await (
+    await init({ ...config, model: again })
+  ).session({ sessionId: "host1" });
+  await drain(await resumed.prompt("and after?"));
+  const conversation = conversationText(again.doStreamCalls[1]!);
+  assert.equal(occurrences(conversation, "Read the day before booking."), 1);
+  // The resumed load, not the replayed one, answers in words: history
+  // replays tool results as JSON.
+  assert.match(conversation, /already active/);
+});

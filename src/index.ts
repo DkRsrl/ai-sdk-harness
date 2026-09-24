@@ -58,7 +58,9 @@ export type {
   SkillDefinition,
   SkillFactory,
   SkillListing,
+  ActiveSkillNotice,
   SkillLoaderBinding,
+  SkillLoaderOutput,
   SkillLoaderTool,
   SkillSource,
 } from "./skills";

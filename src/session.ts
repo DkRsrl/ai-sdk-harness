@@ -46,6 +46,7 @@ import {
   formatSkillInit,
   mergeSkillSources,
   SKILL_LOADER_TOOL_NAME,
+  skillInitName,
   skillLoaderBinder,
   type ParsedSkill,
 } from "./skills";
@@ -264,10 +265,16 @@ export function createSession<
     mergeToolCallers(label, callers, tools);
   }
 
+  // The skills in force, by name — whichever route brought them. The loader
+  // answers a load of one of these with "already active" instead of
+  // appending its instructions a second time.
+  const activeSkills = new Set<string>();
+
   // Initial skills shape the baseline: their tools and routing are active
   // from the first turn (their instructions already ride in `instructions`,
   // resolved by init).
   for (const initial of config.initialSkills ?? []) {
+    activeSkills.add(initial.name);
     activateSkillTools(
       `initial skill("${initial.name}")`,
       initial.tools,
@@ -277,6 +284,13 @@ export function createSession<
 
   for (const message of messages) {
     for (const part of message.parts) {
+      // A skill the host injected (session.skill()) left its `<skill-init>`
+      // in a user message; its instructions are in the conversation.
+      if (message.role === "user" && part.type === "text") {
+        const injected = skillInitName(part.text);
+        if (injected !== undefined) activeSkills.add(injected);
+        continue;
+      }
       if (
         !isToolUIPart(part) ||
         getToolName(part) !== SKILL_LOADER_TOOL_NAME ||
@@ -296,6 +310,7 @@ export function createSession<
       ) {
         continue;
       }
+      activeSkills.add(loaded.name);
       activateSkillTools(
         `loaded skill("${loaded.name}")`,
         loaded.tools,
@@ -321,12 +336,15 @@ export function createSession<
     loaderBind !== undefined && skills !== undefined
       ? loaderBind({
           source: skills,
-          activate: (skill) =>
+          activate: (skill) => {
+            activeSkills.add(skill.name);
             activateSkillTools(
               `skill("${skill.name}")`,
               skill.tools,
               skill.toolCallers ?? {},
-            ),
+            );
+          },
+          isActive: (name) => activeSkills.has(name),
         })
       : undefined;
 
@@ -352,6 +370,7 @@ export function createSession<
       resolved.tools,
       resolved.toolCallers ?? {},
     );
+    activeSkills.add(resolved.name);
 
     const message: SessionMessage = {
       id: generateId(),

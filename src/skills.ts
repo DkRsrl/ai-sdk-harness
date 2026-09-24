@@ -205,6 +205,14 @@ export function formatSkillInit(skill: ParsedSkill): string {
   ].join("\n");
 }
 
+const SKILL_INIT_NAME = /^<skill-init name="([^"]+)">/;
+
+/** The skill a `formatSkillInit` message carries, or undefined for any other
+ *  text — how a resumed session recognizes a skill the host injected. */
+export function skillInitName(text: string): string | undefined {
+  return SKILL_INIT_NAME.exec(text)?.[1];
+}
+
 /** Load a skill from `<skillsDir>/<name>/SKILL.md`. */
 export async function loadSkill(
   skillsDir: string,
@@ -296,11 +304,20 @@ const LOADER_DESCRIPTION = [
   "Call it as your ONLY call in the step — a tool called alongside runs without the instructions it was supposed to follow. The returned instructions apply for the rest of the session. An unknown name is an error listing the skills that exist.",
 ].join("\n");
 
+/** The loader's answer for a skill the session already has in force:
+ *  nothing is read or appended, the model is pointed back at what it has. */
+export type ActiveSkillNotice = { name: string; alreadyActive: true };
+
+export type SkillLoaderOutput = ParsedSkill | ActiveSkillNotice;
+
 const LOADER_INPUT = z.object({
   name: z.string().describe("The skill's name, exactly as listed."),
 });
 
-export type SkillLoaderTool = AiTool<z.infer<typeof LOADER_INPUT>, ParsedSkill>;
+export type SkillLoaderTool = AiTool<
+  z.infer<typeof LOADER_INPUT>,
+  SkillLoaderOutput
+>;
 
 /** What a drive hands the loader's binder: the session's skill source and the
  *  hook that unions a loaded skill's declared tools into the active set. The
@@ -309,6 +326,9 @@ export type SkillLoaderTool = AiTool<z.infer<typeof LOADER_INPUT>, ParsedSkill>;
 export type SkillLoaderBinding = {
   source: SkillSource;
   activate(skill: ParsedSkill): void;
+  /** Whether the skill is already in force in this session — initial, loaded
+   *  by the model or injected by the host. Such a load is a no-op. */
+  isActive(name: string): boolean;
 };
 
 const BIND = Symbol.for("ai-sdk-harness.skill-loader.bind");
@@ -327,7 +347,8 @@ export function skillLoaderTool(): SkillLoaderTool {
     tool({
       description: LOADER_DESCRIPTION,
       inputSchema: LOADER_INPUT,
-      execute: async ({ name }) => {
+      execute: async ({ name }): Promise<SkillLoaderOutput> => {
+        if (binding?.isActive(name)) return { name, alreadyActive: true };
         const skill = await binding?.source.read(name);
         if (!skill) {
           const available = (await binding?.source.list()) ?? [];
@@ -342,7 +363,10 @@ export function skillLoaderTool(): SkillLoaderTool {
       },
       toModelOutput: ({ output }) => ({
         type: "text",
-        value: formatSkillInit(output),
+        value:
+          "alreadyActive" in output
+            ? `Skill "${output.name}" is already active: its instructions are in the conversation. Follow them.`
+            : formatSkillInit(output),
       }),
     });
   return Object.assign(make(), { [BIND]: make } satisfies Bindable);
@@ -359,16 +383,28 @@ export function skillLoaderBinder(
 }
 
 /** The advertisement rendered into the instructions, in opencode's shape: a
- *  short prose preamble carrying the one behavior rule — load before acting in
- *  a covered domain — and an `<available_skills>` block. */
-export function formatSkillCatalog(listings: SkillListing[]): string {
+ *  short prose preamble carrying the behavior rules — load before acting in
+ *  a covered domain — and an `<available_skills>` block. An entry named in
+ *  `loaded` (the session's initial skills) is marked, and the preamble gains
+ *  the rule that an active skill is never loaded again; with nothing marked
+ *  the catalog renders as it always has. */
+export function formatSkillCatalog(
+  listings: SkillListing[],
+  loaded: ReadonlySet<string> = new Set(),
+): string {
+  const marked = listings.some((s) => loaded.has(s.name));
   return [
-    "Skills carry the instructions for specific domains. Two rules:",
+    `Skills carry the instructions for specific domains. ${marked ? "Three" : "Two"} rules:`,
     `- The moment the conversation touches a covered domain, load its skill with ${SKILL_LOADER_TOOL_NAME}. A vague or incomplete request counts: how to respond is in the skill.`,
     `- ${SKILL_LOADER_TOOL_NAME} is your ONLY call in that step. Read what it returns, then decide.`,
+    ...(marked
+      ? [
+          "- A skill marked loaded, or whose <skill-init> is already in the conversation, is active: follow it, never load it again.",
+        ]
+      : []),
     "<available_skills>",
     ...listings.flatMap((s) => [
-      "  <skill>",
+      loaded.has(s.name) ? '  <skill loaded="true">' : "  <skill>",
       `    <name>${s.name}</name>`,
       `    <description>${s.description}</description>`,
       "  </skill>",
@@ -393,11 +429,12 @@ export async function assembleInstructions(
     await role.resolveInstructions(),
     { tools: [...role.tools, ...initialSkills.flatMap((s) => s.tools)] },
     skills,
+    new Set(initialSkills.map((s) => s.name)),
   );
   // An initial skill wears the exact envelope a loaded one arrives in
   // (`formatSkillInit`) and follows the catalog, just as a load off the
-  // catalog would — so the model can tell it is already active and doesn't
-  // load it again.
+  // catalog would; its catalog entry is marked loaded, so the model can
+  // tell it is already active and doesn't load it again.
   const inits = await Promise.all(
     initialSkills.map(async (s) =>
       formatSkillInit({
@@ -415,10 +452,11 @@ export async function withSkillCatalog(
   instructions: string,
   role: { tools: readonly string[] },
   skills: SkillSource | undefined,
+  loaded?: ReadonlySet<string>,
 ): Promise<string> {
   if (!skills || !role.tools.includes(SKILL_LOADER_TOOL_NAME))
     return instructions;
   const listings = await skills.list();
   if (listings.length === 0) return instructions;
-  return `${instructions}\n\n${formatSkillCatalog(listings)}`;
+  return `${instructions}\n\n${formatSkillCatalog(listings, loaded)}`;
 }
